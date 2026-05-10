@@ -1,3 +1,10 @@
+"""基于 RSA-SHA256 签名的异步 HTTP 客户端。
+
+与 Java 后端内部通信，签名机制替代传统 Bearer Token：
+- 每个请求携带 X-Timestamp / X-Nonce / X-Signature 头
+- 签名字符串格式: METHOD\nPATH\nBODY\nTIMESTAMP\nNONCE
+"""
+
 import base64
 import time
 import uuid
@@ -13,7 +20,7 @@ _private_key = None
 
 
 def _load_private_key():
-    """懒加载 RSA 私钥，只解析一次。"""
+    """懒加载 RSA 私钥，全局只解析一次。"""
     global _private_key
     if _private_key is None:
         key_bytes = base64.b64decode(settings.java_private_key_b64)
@@ -24,7 +31,7 @@ def _load_private_key():
 
 
 def _sign(method: str, path: str, body: str, timestamp: str, nonce: str) -> str:
-    """生成 RSA-SHA256 签名。"""
+    """使用 RSA-SHA256 生成请求签名。"""
     sign_string = f"{method}\n{path}\n{body}\n{timestamp}\n{nonce}"
     private_key = _load_private_key()
     signature = private_key.sign(
@@ -36,6 +43,7 @@ def _sign(method: str, path: str, body: str, timestamp: str, nonce: str) -> str:
 
 
 def _make_headers(method: str, path: str, body: str) -> dict[str, str]:
+    """构造包含签名、时间戳、随机数的请求头。"""
     timestamp = str(int(time.time() * 1000))
     nonce = str(uuid.uuid4())
     signature = _sign(method, path, body, timestamp, nonce)
@@ -48,6 +56,7 @@ def _make_headers(method: str, path: str, body: str) -> dict[str, str]:
 
 
 async def post(path: str, json_body: dict | None = None) -> dict:
+    """向 Java 后端发送带签名的 POST 请求，返回 JSON 响应。"""
     body_str = "{}" if json_body is None else _dump_json(json_body)
     headers = _make_headers("POST", path, body_str)
 
@@ -61,10 +70,9 @@ async def post(path: str, json_body: dict | None = None) -> dict:
 
 
 async def upload_file(path: str, file_path: str, fields: dict | None = None) -> dict:
-    """上传文件到 Java 后端（multipart/form-data 暂不参与签名体的 BODY 计算）。
+    """以 multipart/form-data 上传文件到 Java 后端。
 
-    MD_CALLER.md 中未描述文件上传接口的签名细节，此处签名时 BODY 使用
-    fields 的 JSON 序列化值，文件内容不参与签名。
+    文件内容不参与签名，签名仅基于 fields 的 JSON 序列化值。
     """
     fields = fields or {}
     body_str = _dump_json(fields)
@@ -74,7 +82,6 @@ async def upload_file(path: str, file_path: str, fields: dict | None = None) -> 
         base_url=settings.java_base_url,
         timeout=60.0,
     ) as c:
-        # multipart 需要移除 Content-Type 让 httpx 自动设置 boundary
         headers.pop("Content-Type", None)
         with open(file_path, "rb") as f:
             resp = await c.post(
@@ -88,6 +95,6 @@ async def upload_file(path: str, file_path: str, fields: dict | None = None) -> 
 
 
 def _dump_json(obj: dict) -> str:
-    """序列化 JSON，不添加空格，保持与 Java 端签名一致。"""
+    """紧凑 JSON 序列化，不含空格，保持与 Java 端签名一致。"""
     import json
     return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)

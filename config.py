@@ -1,7 +1,14 @@
+"""全局配置，基于 pydantic-settings 从 .env 文件与环境变量加载。"""
+
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
+    """应用配置聚合类，所有字段可从 .env 或环境变量读取。
+
+    嵌入模型、Celery broker/backend 提供 effective_* 属性自动回退到对应主配置。
+    """
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
     # ── 服务 ──
@@ -64,18 +71,22 @@ class Settings(BaseSettings):
 
     @property
     def effective_embedding_base_url(self) -> str:
+        """嵌入模型 base_url，为空时回退到 llm_base_url。"""
         return self.embedding_base_url or self.llm_base_url
 
     @property
     def effective_embedding_api_key(self) -> str:
+        """嵌入模型 api_key，为空时回退到 llm_api_key。"""
         return self.embedding_api_key or self.llm_api_key
 
     @property
     def effective_celery_broker_url(self) -> str:
+        """Celery broker URL，为空时复用 redis_url。"""
         return self.celery_broker_url or self.redis_url
 
     @property
     def effective_celery_result_backend(self) -> str:
+        """Celery result backend URL，为空时复用 redis_url。"""
         return self.celery_result_backend or self.redis_url
 
 

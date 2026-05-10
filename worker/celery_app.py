@@ -1,3 +1,8 @@
+"""Celery 应用实例 — 异步任务队列配置。
+
+使用 Redis 作为 broker 和 result backend。
+"""
+
 from celery import Celery
 
 from config import settings

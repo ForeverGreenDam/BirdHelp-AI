@@ -1,3 +1,5 @@
+"""API 路由汇总，将各模块子路由挂载到统一前缀下。"""
+
 from fastapi import APIRouter
 
 from api.task import router as task_router
