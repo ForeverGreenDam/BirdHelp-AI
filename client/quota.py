@@ -11,7 +11,7 @@ async def consume_quota(user_id: int, related_id: int | None = None) -> dict:
     body = {"userId": user_id}
     if related_id is not None:
         body["relatedId"] = related_id
-    return await post(f"{PREFIX}/quota/consume", body)
+    return await post(f"{PREFIX}/internal/quota/consume", body)
 
 
 async def refund_quota(user_id: int, related_id: int | None = None) -> dict:
@@ -19,4 +19,4 @@ async def refund_quota(user_id: int, related_id: int | None = None) -> dict:
     body = {"userId": user_id}
     if related_id is not None:
         body["relatedId"] = related_id
-    return await post(f"{PREFIX}/quota/refund", body)
+    return await post(f"{PREFIX}/internal/quota/refund", body)

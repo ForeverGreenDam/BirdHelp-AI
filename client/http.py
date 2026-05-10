@@ -94,7 +94,82 @@ async def upload_file(path: str, file_path: str, fields: dict | None = None) -> 
         return resp.json()
 
 
+async def get(path: str, params: dict | None = None) -> dict:
+    """向 Java 后端发送带签名的 GET 请求，返回 JSON 响应。"""
+    params = params or {}
+    query_string = _encode_query(params)
+    signed_path = f"{path}?{query_string}" if query_string else path
+    headers = _make_headers("GET", signed_path, "")
+
+    async with httpx.AsyncClient(
+        base_url=settings.java_base_url,
+        timeout=30.0,
+    ) as c:
+        resp = await c.get(path, params=params, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def download_file(path: str, params: dict | None = None, save_path: str = "") -> bytes:
+    """从 Java 后端下载文件，返回原始字节（也可指定 save_path 写到磁盘）。"""
+    params = params or {}
+    query_string = _encode_query(params)
+    signed_path = f"{path}?{query_string}" if query_string else path
+    headers = _make_headers("GET", signed_path, "")
+
+    async with httpx.AsyncClient(
+        base_url=settings.java_base_url,
+        timeout=60.0,
+    ) as c:
+        resp = await c.get(path, params=params, headers=headers)
+        resp.raise_for_status()
+        content = resp.read()
+        if save_path:
+            with open(save_path, "wb") as f:
+                f.write(content)
+        return content
+
+
+async def delete(path: str, params: dict | None = None) -> dict:
+    """向 Java 后端发送带签名的 DELETE 请求。"""
+    params = params or {}
+    query_string = _encode_query(params)
+    signed_path = f"{path}?{query_string}" if query_string else path
+    headers = _make_headers("DELETE", signed_path, "")
+
+    async with httpx.AsyncClient(
+        base_url=settings.java_base_url,
+        timeout=30.0,
+    ) as c:
+        resp = await c.delete(path, params=params, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def put(path: str, params: dict | None = None, json_body: dict | None = None) -> dict:
+    """向 Java 后端发送带签名的 PUT 请求。"""
+    params = params or {}
+    body_str = _dump_json(json_body) if json_body else "{}"
+    query_string = _encode_query(params)
+    signed_path = f"{path}?{query_string}" if query_string else path
+    headers = _make_headers("PUT", signed_path, body_str)
+
+    async with httpx.AsyncClient(
+        base_url=settings.java_base_url,
+        timeout=30.0,
+    ) as c:
+        resp = await c.put(path, params=params, content=body_str, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
+
+
 def _dump_json(obj: dict) -> str:
     """紧凑 JSON 序列化，不含空格，保持与 Java 端签名一致。"""
     import json
     return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
+
+
+def _encode_query(params: dict) -> str:
+    """将 dict 编码为 URL query string，按 key 排序保证签名确定性。"""
+    from urllib.parse import urlencode
+    return urlencode(sorted(params.items()))
