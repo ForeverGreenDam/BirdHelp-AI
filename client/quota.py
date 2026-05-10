@@ -1,19 +1,20 @@
 from client.http import post
+from config import settings
+
+PREFIX = f"{settings.java_api_prefix}/internal"
 
 
-async def consume_quota(user_id: str, amount: int = 1, callback_id: str = "") -> dict:
+async def consume_quota(user_id: int, related_id: int | None = None) -> dict:
     """生成前扣减额度。"""
-    return await post("/internal/quota/consume", {
-        "user_id": user_id,
-        "amount": amount,
-        "callback_id": callback_id,
-    })
+    body = {"userId": user_id}
+    if related_id is not None:
+        body["relatedId"] = related_id
+    return await post(f"{PREFIX}/quota/consume", body)
 
 
-async def refund_quota(user_id: str, amount: int = 1, callback_id: str = "") -> dict:
+async def refund_quota(user_id: int, related_id: int | None = None) -> dict:
     """生成失败退还额度。"""
-    return await post("/internal/quota/refund", {
-        "user_id": user_id,
-        "amount": amount,
-        "callback_id": callback_id,
-    })
+    body = {"userId": user_id}
+    if related_id is not None:
+        body["relatedId"] = related_id
+    return await post(f"{PREFIX}/quota/refund", body)

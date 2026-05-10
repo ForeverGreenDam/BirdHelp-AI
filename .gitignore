@@ -1,0 +1,22 @@
+# 环境配置（含敏感信息，不提交）
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+
+# 临时文件
+/tmp/
+chroma_data/
+
+# 分发
+dist/
+build/
+*.egg-info/
