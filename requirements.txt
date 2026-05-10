@@ -1,0 +1,15 @@
+fastapi==0.136.*
+uvicorn[standard]==0.46.*
+langchain==0.3.*
+langchain-openai==0.2.*
+langchain-community==0.3.*
+langgraph==0.2.*
+chromadb==0.5.*
+python-pptx==1.0.*
+python-docx==1.1.*
+pypdf==5.*
+celery==5.4.*
+redis==5.2.*
+httpx==0.28.*
+pydantic-settings==2.*
+loguru==0.7.*
