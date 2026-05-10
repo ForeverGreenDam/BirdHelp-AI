@@ -1,0 +1,65 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+BirdHelp AI 模块 — 大学生文档助手的 Python AI 能力层。与 Java 后端通过 HTTP 内部协议协作，负责大模型调用、RAG（检索增强生成）、Office 文件生成（PPT/Word/PDF）、语音转文字、OCR。
+
+完整架构和开发计划参见 `DESIGN.md`。
+
+## Commands
+
+```bash
+# 开发服务器
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+
+# 生产运行 (后续)
+uvicorn main:app --host 0.0.0.0 --port 8000 --workers 3
+
+# Celery Worker (后续)
+celery -A worker.celery_app worker --loglevel=info -c 3
+
+# 安装依赖 (后续有了 requirements.txt)
+pip install -r requirements.txt
+```
+
+## Architecture
+
+**分层结构** (详见 DESIGN.md 第三章):
+- `api/` — FastAPI 路由层，对外暴露 `/ai/*` 接口，由 Java 后端代理转发
+- `chains/` — LangChain Chain 定义（ppt_chain / word_chain / pdf_chain / chat_chain），封装 Prompt + LLM + OutputParser
+- `graph/` — LangGraph 状态图（generation_graph: RAG→生成→检查→重试；chat_graph: 对话修改）
+- `rag/` — RAG 管线（ingestion → retrieval → vector_store）
+- `generator/` — Office 文件生成（python-pptx / python-docx / LibreOffice PDF）
+- `client/` — 调用 Java 后端内部接口（quota / file）
+- `worker/` — Celery 异步任务（文件生成是长任务）
+- `core/` — 基础设施（ChatModel 工厂、Embedding 工厂、Schemas、异常）
+
+**核心流程**: 请求 → API 层 → Celery 任务 → LangGraph 状态图 → RAG 检索(可选) → LangChain Chain → LLM 生成 → 文件生成器 → 上传 Java 后端
+
+**RAG 管线**: 文件上传 → LangChain Loader 解析 → 清洗 → RecursiveCharacterTextSplitter → Embedding → ChromaDB/Milvus → 生成时混合检索 (向量+BM25+RRF) → 注入 Prompt
+
+## Java Backend Contract
+
+AI 模块需要调用 Java 后端的三个内部接口（带 internal token 鉴权）:
+
+| 接口 | 调用时机 |
+|------|---------|
+| `POST /internal/quota/consume` | 生成开始前扣额度 |
+| `POST /internal/quota/refund` | 生成失败退额度 |
+| `POST /internal/file/upload` | 文件生成完成后上传 |
+
+AI 模块对外暴露的接口由 Java 后端代理转发给前端，AI 模块不直接面向用户。
+
+## Key Tech Stack
+
+- **FastAPI** + Uvicorn (Web)
+- **LangChain** + **LangGraph** (LLM 编排、RAG、工作流)
+- **langchain-openai** (ChatOpenAI 兼容协议，对接 DeepSeek/通义千问/GPT-4o)
+- **ChromaDB** (开发) / **Milvus** (生产) 向量库
+- **Celery** + **Redis** (异步任务)
+- **python-pptx** / **python-docx** / **LibreOffice** (文件生成)
+- **PaddleOCR** / **OpenAI Whisper** (OCR / 语音)
+- **httpx** (async HTTP 客户端)
+- **pydantic-settings** / **loguru** (配置 / 日志)
