@@ -1,6 +1,6 @@
 # BirdHelp AI 模块设计文档
 
-> v2.0 | 2026-05-10
+> v3.0 | 2026-05-12
 
 ---
 
@@ -13,29 +13,32 @@ Java 后端（已建成）              Python AI 模块（本项目）
 额度校验与扣减                   Prompt 模板管理
 文件存储（OSS/本地）             RAG：文档解析 → 向量检索 → 增强生成
 会员管理                         PPT / Word / PDF 文件生成
-请求路由与代理转发               OCR
+请求路由与代理转发               OCR（独立接口 + RAG 解析兜底）
 ```
 
 ---
 
 ## 二、技术选型
 
-| 领域 | 技术 |
-|------|------|
-| Web 框架 | FastAPI |
-| AI 框架 | LangChain + LangGraph |
-| 大模型接入 | langchain-openai (ChatOpenAI，兼容 DeepSeek/通义千问/GPT-4o) |
-| 嵌入模型 | text-embedding-3-small 或 bge-large-zh-v1.5 |
-| 向量数据库 | Redis Stack |
-| PPT 生成 | python-pptx |
-| Word 生成 | python-docx |
-| PDF 生成 | python-docx → LibreOffice 无头转换 |
-| 文档解析 | LangChain Loaders (PyPDF/Docx2txt/Unstructured) |
-| OCR | PaddleOCR |
-| 异步任务 | FastAPI BackgroundTasks |
-| HTTP 客户端 | httpx (async) |
-| 配置 | pydantic-settings |
-| 日志 | loguru |
+| 领域 | 技术 | 选型理由 |
+|------|------|----------|
+| Web 框架 | FastAPI | 异步原生、生态成熟、与 Java 后端 httpx 统一 |
+| AI 框架 | LangChain + LangGraph | 统一的 RAG / Chain / 状态图编排 |
+| 大模型接入 | langchain-openai (ChatOpenAI) | OpenAI 兼容协议，同时对接 DeepSeek / 通义千问 / GPT-4o |
+| 嵌入模型 | text-embedding-3-small 或通义 text-embedding-v4 | 中文语义效果稳定，1536 维性价比高 |
+| 向量数据库 | Redis Stack | 低延迟向量检索 + 用户索引隔离 + 已有机房 Redis 实例 |
+| PPT 生成 | python-pptx | 轻量纯 Python，无需 LibreOffice |
+| Word 生成 | python-docx | 同上 |
+| PDF 生成 | python-docx → LibreOffice 无头转换 | 先建 docx 再转 PDF，保证排版一致性 |
+| 文档解析 | LangChain Loaders (PyPDF / python-docx / python-pptx) | 生态统一，TextSplitter 无缝衔接 |
+| PDF OCR 兜底 | PyMuPDF (fitz) + PaddleOCR | PDF 页→图片渲染→OCR，解决扫描版/图片型 PDF |
+| PPT/Word 图片 OCR | python-pptx/docx 图片提取 + PaddleOCR | 导出嵌入图片 blb → OCR 识别 |
+| OCR 引擎 | PaddleOCR | 中文识别准确率高、离线可用、配置简单 |
+| 异步任务 | FastAPI BackgroundTasks | 轻量，不引入 Celery 复杂度 |
+| HTTP 客户端 | httpx (async) | 与 FastAPI 异步模型一致，支持连接池复用 |
+| PDF 页面渲染 (OCR 兜底) | PyMuPDF | 纯 C 实现，比 pdf2image + poppler 更轻，Docker 友好 |
+| 配置 | pydantic-settings | 自动加载 .env + 环境变量 |
+| 日志 | loguru | 开箱即用，结构化日志，比 logging 模块简洁 |
 
 ---
 
@@ -46,56 +49,58 @@ BirdHelp/
 ├── main.py
 ├── config.py
 │
-├── api/                  # 对外 API
-│   ├── router.py
-│   ├── ppt.py            # POST /ai/ppt/generate
-│   ├── word.py           # POST /ai/word/generate
-│   ├── pdf.py            # POST /ai/pdf/generate
-│   ├── chat.py           # POST /ai/chat/modify
-│   ├── material.py       # /ai/material/*  素材管理
-│   └── ocr.py            # POST /ai/ocr/recognize
+├── api/                    # 对外 API（✅ 已实现: router, material）
+│   ├── router.py           #   │ 待实现: ppt, word, pdf, chat, ocr
+│   ├── material.py         # ✅ POST /ai/material/upload
+│   ├── ppt.py              # ⬜ POST /ai/ppt/generate
+│   ├── word.py             # ⬜ POST /ai/word/generate
+│   ├── pdf.py              # ⬜ POST /ai/pdf/generate
+│   ├── chat.py             # ⬜ POST /ai/chat/modify
+│   └── ocr.py              # ⬜ POST /ai/ocr/recognize
 │
-├── chains/               # LangChain Chain
+├── chains/                 # LangChain Chain（⬜ 占位）
 │   ├── ppt_chain.py
 │   ├── word_chain.py
 │   ├── pdf_chain.py
 │   └── chat_chain.py
 │
-├── graph/                # LangGraph 工作流
-│   ├── generation_graph.py   # RAG→生成→检查→重试
-│   └── chat_graph.py         # 对话修改状态图
+├── graph/                  # LangGraph 工作流（⬜ 占位）
+│   ├── generation_graph.py # RAG→生成→检查→重试
+│   └── chat_graph.py       # 对话修改状态图
 │
-├── rag/                  # RAG 管线
-│   ├── ingestion.py      # 文档加载→清洗→切分→嵌入→入库
-│   ├── retrieval.py      # 混合检索 (向量 + BM25 + RRF)
-│   └── vector_store.py   # Redis Stack 向量库管理
+├── rag/                    # RAG 管线（✅ 已实现）
+│   ├── ingestion.py        # ✅ 文档下载→解析→切分→嵌入→入库
+│   ├── retrieval.py        # ✅ 混合检索 (向量 + BM25 + RRF)
+│   └── vector_store.py     # ✅ Redis Stack 用户索引隔离 + CRUD
 │
-├── generator/            # Office 文件生成
-│   ├── base.py
-│   ├── ppt.py
-│   ├── word.py
-│   └── pdf.py
+├── generator/              # Office 文件生成（⬜ 仅骨架 base.py）
+│   ├── base.py             # ✅ 抽象基类
+│   ├── ppt.py              # ⬜ PPT 生成器
+│   ├── word.py             # ⬜ Word 生成器
+│   └── pdf.py              # ⬜ PDF 生成器
 │
-├── services/             # 业务编排
+├── services/               # 业务编排（⬜ 占位）
 │   ├── generation.py
 │   ├── chat.py
-│   └── ocr.py
+│   └── ocr.py              # ⬜ OCR 业务逻辑（含 PDF/PPT/Word 图片 OCR）
 │
-├── client/               # Java 后端调用
-│   ├── http.py
-│   ├── quota.py
-│   └── file.py
+├── client/                 # Java 后端调用（✅ 已实现）
+│   ├── http.py             # ✅ RSA-SHA256 签名 HTTP 客户端
+│   ├── quota.py            # ✅ 额度消耗/退还
+│   └── file.py             # ✅ 文件上传/下载/删除
 │
-├── core/                 # 基础设施
-│   ├── llm.py            # ChatModel 工厂
-│   ├── embedding.py      # Embedding 工厂
-│   ├── schemas.py        # Pydantic 模型
-│   └── exceptions.py     # 异常 + 错误码
+├── core/                   # 基础设施（✅ 已实现）
+│   ├── llm.py              # ✅ ChatModel 工厂
+│   ├── embedding.py        # ✅ Embedding 工厂
+│   ├── schemas.py          # ✅ Pydantic 模型
+│   └── exceptions.py       # ✅ 异常 + 错误码
 │
-└── utils/
-    ├── file.py
-    └── format.py
+└── utils/                  # 工具（✅ 已实现）
+    ├── file.py             # ✅ 临时文件路径/清理
+    └── format.py           # ✅ JSON 安全解析
 ```
+
+> ✅ 已实现  |  ⬜ 待实现
 
 ---
 
@@ -103,45 +108,111 @@ BirdHelp/
 
 ### 4.1 AI 模块对外接口（Java 代理转发）
 
-| 方法 | 路径 | 用途 |
-|------|------|------|
-| POST | `/ai/ppt/generate` | 生成 PPT (支持 RAG) |
-| POST | `/ai/word/generate` | 生成 Word (支持 RAG) |
-| POST | `/ai/pdf/generate` | 生成 PDF (支持 RAG) |
-| POST | `/ai/chat/modify` | 对话式修改文档 |
-| POST | `/ai/ocr/recognize` | OCR 识别 |
-| POST | `/ai/material/upload` | 上传 RAG 参考素材 |
-| GET | `/ai/material/list` | 查询素材列表 |
-| DELETE | `/ai/material/{id}` | 删除素材 |
-| GET | `/ai/task/{task_id}/status` | 查询异步任务状态 |
+| 方法 | 路径 | 用途 | 状态 |
+|------|------|------|------|
+| POST | `/ai/material/upload` | 上传 RAG 参考素材并触发摄取 | ✅ |
+| GET | `/ai/material/list` | 查询素材列表 | ✅ |
+| DELETE | `/ai/material/{id}` | 删除素材（Java 回收站 + Redis 向量清理） | ✅ |
+| POST | `/ai/ppt/generate` | 生成 PPT（支持 RAG） | ⬜ |
+| POST | `/ai/word/generate` | 生成 Word（支持 RAG） | ⬜ |
+| POST | `/ai/pdf/generate` | 生成 PDF（支持 RAG） | ⬜ |
+| POST | `/ai/chat/modify` | 对话式修改文档 | ⬜ |
+| POST | `/ai/ocr/recognize` | 独立 OCR 识别接口 | ⬜ |
+| GET | `/ai/task/{task_id}/status` | 查询异步任务状态 | ⬜ |
 
-所有生成接口请求体统一包含 `material_ids` 和 `rag_enabled` 可选字段以启用 RAG。
+所有生成接口请求体统一包含 `material_ids` 和 `rag_enabled` 可选字段。
 
 ### 4.2 调用的 Java 内部接口
 
-| 方法 | 路径 | 调用时机 |
-|------|------|---------|
-| POST | `/internal/quota/consume` | 生成开始前 |
-| POST | `/internal/quota/refund` | 生成失败时 |
-| POST | `/internal/file/upload` | 文件生成完成后 |
+| 方法 | 路径 | 调用时机 | 状态 |
+|------|------|---------|------|
+| POST | `/api/internal/quota/consume` | 生成开始前扣额度 | ✅ |
+| POST | `/api/internal/quota/refund` | 生成失败退额度 | ✅ |
+| POST | `/api/internal/file/upload` | 文件生成完成后上传 | ✅ |
 
 ---
 
 ## 五、RAG 管线
 
-```
-用户上传文件 (PDF/DOCX/PPTX/TXT/图片)
-  → 类型检测 → LangChain Loader 解析 → 文本清洗
-  → RecursiveCharacterTextSplitter (chunk=1000, overlap=200)
-  → Embedding 向量化 → 存入 Redis Stack (按 user_id + material_id 隔离)
+> 详见 `doc/RAG_PIPELINE.md`
 
-生成时检索:
-  → MultiQueryRetriever (查询改写)
-  → 混合检索 (向量 top10 + BM25 top10 → RRF 融合 → 取 top5)
+### 5.1 摄取向段（当前实现）
+
+```
+用户上传文件 (PDF/DOCX/PPTX/TXT)
+  → 类型检测 → Loader 解析 → 文本合并
+  → RecursiveCharacterTextSplitter (chunk=1000, overlap=200)
+  → Embedding 向量化 → Redis Stack (按 user_id 索引隔离)
+```
+
+**当前解析能力：**
+
+| 格式 | 解析方式 | 能提取 | 不能提取 |
+|------|----------|--------|----------|
+| PDF | `PyPDFLoader` | 文本层文字 | 扫描版/图片型 PDF（无文本层） |
+| DOCX | 自定义 `_load_docx()` | 段落文本 | 嵌入图片中的文字 |
+| PPTX | 自定义 `_load_pptx()` | 文本框文字 | 嵌入图片/截图中的文字 |
+| TXT | 自定义 `_load_txt()` | 全部文本 | — |
+
+### 5.2 检索阶段
+
+```
+用户查询
+  → MultiQueryRetriever (LLM 改写为多视角)
+  → EnsembleRetriever (权重 0.5:0.5)
+      ├─ 向量检索 (Redis 相似度, top_k×2)
+      └─ BM25 关键词检索 (内存索引, top_k×2)
+  → RRF 融合 → 去重 → 截断 top_k
   → 注入 Prompt {context} 占位符
 ```
 
-生成接口新增可选参数 `material_ids` 限定检索范围，不传则检索用户全部素材。
+### 5.3 OCR 兜底策略（Phase 4 实现）
+
+针对当前解析器无法提取图片内文字的问题，为每种格式设计 OCR 兜底方案：
+
+**PDF OCR 兜底（两级策略）**
+
+```
+PyPDFLoader 提取文本层
+  ├── 非空 → 正常走切分管道
+  └── 空 (图片型 PDF) → OCR 兜底:
+          PyMuPDF(fitz) 逐页渲染为 200 DPI 图片
+          → PaddleOCR 逐页识别
+          → 拼接全量文本 → 进入切分管道
+```
+
+**PPTX 图片 OCR**
+
+```
+_load_pptx 提取文本框架文字
+  → 遍历 shape 提取图片 blob (MSO_SHAPE_TYPE.PICTURE)
+  → PaddleOCR 逐图识别
+  → 与文本框架文字合并 → 进入切分管道
+```
+
+**DOCX 图片 OCR**
+
+```
+_load_docx 提取段落文字
+  → 遍历 document.part.related_parts 提取图片 blob
+  → PaddleOCR 逐图识别
+  → 与段落文字合并 → 进入切分管道
+```
+
+**OCR 技术选型**
+
+| 环节 | 技术 | 选型理由 |
+|------|------|----------|
+| PDF 渲染 | PyMuPDF (fitz) | 纯 C，Docker 友好，无需系统依赖 poppler；比 pdf2image 轻量 |
+| 图片提取 (PPTX) | python-pptx `shape.image.blob` | 直接从 shape 对象拿字节数据，无需写临时文件 |
+| 图片提取 (DOCX) | python-docx `document.inline_shapes` | 遍历内联图片关系获取 blob |
+| OCR 引擎 | PaddleOCR | 项目已有 `paddleocr_lang` 配置；中文准确率高；离线可用 |
+
+**性能考量**
+- OCR 速度约每页 1~3 秒（CPU），纯图片 30 页 PDF 预估 30~90 秒
+- 建议加页数上限（如 >50 页拒绝 OCR，提示用户拆分）
+- 摄取为一次性异步操作，OCR 耗时在不阻塞请求的前提下可接受
+- `paddleocr_lang` 配置项可控制语言包加载，中文场景用 `"ch"`，中英混合可用 `"ch"`（自带英文识别）
 
 ---
 
@@ -169,41 +240,119 @@ BirdHelp/
 
 ---
 
-## 七、开发计划
+## 七、执行阶段
 
-### Phase 1: 基础设施 (第 1–2 周)
-- FastAPI 骨架 + 配置 + 日志
+### Phase 1: 基础设施 ✅ 已完成
+
+- FastAPI 应用骨架、全局配置、日志
 - LangChain ChatModel / Embedding 工厂
-- Java 客户端 (`client/`)
-- Pydantic Schema + 任务状态接口
+- Java 后端 HTTP 客户端（RSA-SHA256 签名认证）
+- 文件服务客户端（上传 / 下载 / 列表 / 删除）
+- 额度管理客户端（消耗 / 退还）
+- Pydantic Schema + 统一 ApiResponse
+- 异常体系 + 错误码
 
-### Phase 2: RAG 管线 (第 3–5 周)
-- 摄取管道 (解析→切分→嵌入→入库)
-- Redis Stack 集成 + 素材 CRUD API
-- 混合检索器 + Query Rewriting
+### Phase 2: RAG 管线 ✅ 已完成
 
-### Phase 3: 文档生成 (第 6–8 周)
-- PPT / Word / PDF Chain + 文件生成器
-- LangGraph 生成状态图
-- 文件生成 + 文件上传回调
+- 摄取管道：多格式解析 → 切分 → 嵌入 → Redis 入库
+- Redis Stack 向量存储：用户级索引隔离 + CRUD
+- 素材管理 API（上传 / 列表 / 删除）
+- 混合检索器：向量 + BM25 + RRF + MultiQuery 改写
+- 素材删除联动（Java 回收站 + Redis 向量清理）
+- RAG 管线文档 (`doc/RAG_PIPELINE.md`)
 
-### Phase 4: 对话修改 (第 9–10 周)
-- Chat Chain + LangGraph 对话状态图
-- python-pptx/docx 增量编辑
-- 多轮对话历史管理
+### Phase 3: 文档生成（第 1–3 周）
 
-### Phase 5: 辅助能力 + 上线 (第 11–12 周)
-- PaddleOCR 集成
-- 与 Java 后端联调 + 压测
+**目标：** 用户上传素材后，AI 生成完整 Office 文档。
+
+- LangChain Chain 实现：
+  - `ppt_chain.py` — PPT 大纲 Prompt + LLM + JSON OutputParser
+  - `word_chain.py` — Word 内容 Prompt + LLM + JSON OutputParser
+  - `pdf_chain.py` — PDF 内容 Prompt + LLM + JSON OutputParser
+- Office 文件生成器：
+  - `generator/ppt.py` — 基于 python-pptx 的 PPT 生成（排版、配色、图表位置）
+  - `generator/word.py` — 基于 python-docx 的 Word 生成（标题层级、段落样式、表格）
+  - `generator/pdf.py` — python-docx → LibreOffice 无头转换
+- LangGraph 生成状态图：
+  - `graph/generation_graph.py` — RAG 检索 → Chain 执行 → JSON 校验 → 失败重试（≤3 次）
+- 生成接口：`POST /ai/ppt/generate` / `/ai/word/generate` / `/ai/pdf/generate`
+- 生成完成后上传文件至 Java 后端
+
+### Phase 4: 对话修改（第 4–5 周）
+
+**目标：** 用户通过多轮对话对已生成文档进行增量修改。
+
+- Chat Chain：`chains/chat_chain.py`（对话 → 修改指令 JSON → 增量编辑）
+- LangGraph 对话状态图：
+  - `graph/chat_graph.py` — 会话管理、RAG 可选注入、修改 → 检查 → 重试循环
+- 增量编辑能力（python-pptx / python-docx 对象模型操作）
+- 多轮对话历史持久化
+- `POST /ai/chat/modify` 接口
+- OCR 兜底功能（延迟至时间充裕时实现，见 [七、Phase 6](#phase-6-ocr-兜底--图片识别后续迭代)）
+
+### Phase 5: 辅助能力 + 上线（第 6–7 周）
+
+- REST API 路由全部注册
+- 异步任务状态接口 (`GET /ai/task/{task_id}/status`)
+- `services/` 业务编排层（generation / chat / ocr service）
+- 与 Java 后端联调（生成接口的完整调用链）
+- 额度消耗 / 退还的完整流程验证
+- 异常场景覆盖（生成超时、文件损坏、额度不足）
+- 性能压测 + 并发安全
+
+### Phase 6: OCR 兜底 + 图片识别（后续迭代）
+
+> **优先级：低。** 核心生成流程先打通，此阶段在时间充裕时进行。
+
+**背景：** 当前 RAG 解析器只能提取文本层，面对图片型 PDF（扫描教材、PPT 截图拼成的 PDF）、PPT/Word 中的嵌入图片时，文字信息完全丢失，导致这部分素材无法参与检索和生成。
+
+**子任务：**
+
+1. **PDF OCR 兜底**
+   - `rag/ingestion.py` 增加 `_load_pdf_with_ocr_fallback()` 函数
+   - 逻辑：`PyPDFLoader` 提取文本 → 为空则 PyMuPDF 逐页渲染 → PaddleOCR 识别
+   - 依赖新增：`PyMuPDF` (fitz)、`paddlepaddle` + `paddleocr`
+   - 配置新增：`ocr_dpi: int = 200`、`ocr_max_pages: int = 50`
+
+2. **PPTX 图片 OCR**
+   - `rag/ingestion.py` 改造 `_load_pptx()`：遍历 shape 提取图片 blob → PaddleOCR
+   - 依赖已有：`python-pptx` (shape.image.blob)、`paddleocr`
+
+3. **DOCX 图片 OCR**
+   - `rag/ingestion.py` 改造 `_load_docx()`：遍历 inline_shapes 提取图片 → PaddleOCR
+   - 依赖已有：`python-docx` (document.inline_shapes)、`paddleocr`
+
+4. **独立 OCR 接口**
+   - `api/ocr.py` — `POST /ai/ocr/recognize`，支持单图片 / 单 PDF 页面 OCR
+   - `services/ocr.py` — 封装 OCR 逻辑，供 ingestion 和 API 复用
+
+5. **性能优化**
+   - OCR 结果缓存（按文件 hash，避免重复识别同一文件）
+   - 超时控制（大文件页数上限、单页超时）
+   - GPU 加速支持（PaddleOCR 可选 CUDA 后端）
 
 ---
 
 ## 八、核心依赖
 
-```
+```text
+# Web & AI 框架
 fastapi                    langchain                  langchain-openai
-langchain-community        langgraph
+langchain-community        langgraph                  langchain-text-splitters
+
+# 文件生成
 python-pptx                python-docx                pypdf
-paddleocr                  redis
-httpx                      pydantic-settings          loguru
+
+# 向量存储
+redis
+
+# HTTP 客户端
+httpx
+
+# OCR（Phase 6 新增 PyMuPDF）
+paddleocr                  paddlepaddle
+PyMuPDF                    # PDF → 图片渲染，OCR 兜底
+
+# 配置 & 日志
+pydantic-settings          loguru
 ```
