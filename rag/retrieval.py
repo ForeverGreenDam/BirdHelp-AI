@@ -19,7 +19,7 @@ from rag.vector_store import get_vectorstore, get_all_documents
 def _build_ensemble(user_id: str, k: int | None = None) -> EnsembleRetriever:
     """构建向量 + BM25 混合检索器（RRF 融合）。
 
-    每次调用都会用 ChromaDB 中的最新文档重建 BM25 索引。
+    每次调用都会用向量库中的最新文档重建 BM25 索引。
     """
     top_k = k or settings.retrieval_top_k
 
@@ -27,7 +27,7 @@ def _build_ensemble(user_id: str, k: int | None = None) -> EnsembleRetriever:
     vectorstore = get_vectorstore(user_id)
     vector_retriever = vectorstore.as_retriever(search_kwargs={"k": top_k * 2})
 
-    # BM25 关键词检索器（从 ChromaDB 加载全部文档构建索引）
+    # BM25 关键词检索器（从向量库加载全部文档构建索引）
     all_docs = get_all_documents(user_id)
     if not all_docs:
         logger.warning(f"User {user_id} has no indexed documents, fallback to vector only")

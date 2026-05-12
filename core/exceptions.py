@@ -4,7 +4,7 @@
   1xxx: 参数 / 业务错误
   2xxx: LLM / 嵌入模型错误
   3xxx: 文件生成 / 上传 / 摄取错误
-  4xxx: 语音 / OCR 错误
+  4xxx: OCR 错误
   5xxx: 内部未知错误
 """
 
@@ -78,12 +78,7 @@ class MaterialIngestionError(BirdHelpError):
         super().__init__(code=3003, message=message)
 
 
-# ── 语音 / OCR 错误 (4xxx) ──
-
-class SpeechRecognitionError(BirdHelpError):
-    """语音转文字失败。"""
-    def __init__(self, message: str = "语音识别失败"):
-        super().__init__(code=4001, message=message)
+# ── OCR 错误 (4xxx) ──
 
 
 # ── 内部错误 (5xxx) ──

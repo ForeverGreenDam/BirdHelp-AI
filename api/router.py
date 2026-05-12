@@ -2,11 +2,9 @@
 
 from fastapi import APIRouter
 
-from api.task import router as task_router
 from api.material import router as material_router
 
 api_router = APIRouter()
-api_router.include_router(task_router)
 api_router.include_router(material_router)
 
 # Phase 3-5 will add:

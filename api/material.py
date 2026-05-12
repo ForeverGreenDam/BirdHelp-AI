@@ -2,7 +2,7 @@
 
 POST /ai/material/upload   — 上传文件并触发 RAG 摄取管道
 GET  /ai/material/list     — 查询用户素材列表（代理 Java 后端）
-DELETE /ai/material/{id}   — 删除素材（Java 回收站 + ChromaDB 清理）
+DELETE /ai/material/{id}   — 删除素材（Java 回收站 + Redis 向量清理）
 """
 
 from fastapi import APIRouter, UploadFile, File, Form, Depends, Query
@@ -101,7 +101,7 @@ async def delete_material(
     material_id: int,
     user_id: int = Query(..., description="用户 ID"),
 ):
-    """删除素材：Java 后端软删除（移入回收站）+ ChromaDB 向量清理。"""
+    """删除素材：Java 后端软删除（移入回收站）+ Redis 向量清理。"""
     # 1. Java 软删除
     await java_delete(material_id)
 

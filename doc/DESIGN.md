@@ -13,7 +13,7 @@ Java 后端（已建成）              Python AI 模块（本项目）
 额度校验与扣减                   Prompt 模板管理
 文件存储（OSS/本地）             RAG：文档解析 → 向量检索 → 增强生成
 会员管理                         PPT / Word / PDF 文件生成
-请求路由与代理转发               语音转文字 / OCR
+请求路由与代理转发               OCR
 ```
 
 ---
@@ -26,14 +26,13 @@ Java 后端（已建成）              Python AI 模块（本项目）
 | AI 框架 | LangChain + LangGraph |
 | 大模型接入 | langchain-openai (ChatOpenAI，兼容 DeepSeek/通义千问/GPT-4o) |
 | 嵌入模型 | text-embedding-3-small 或 bge-large-zh-v1.5 |
-| 向量数据库 | ChromaDB (开发) / Milvus (生产) |
+| 向量数据库 | Redis Stack |
 | PPT 生成 | python-pptx |
 | Word 生成 | python-docx |
 | PDF 生成 | python-docx → LibreOffice 无头转换 |
 | 文档解析 | LangChain Loaders (PyPDF/Docx2txt/Unstructured) |
 | OCR | PaddleOCR |
-| 语音识别 | OpenAI Whisper API |
-| 异步任务 | Celery + Redis |
+| 异步任务 | FastAPI BackgroundTasks |
 | HTTP 客户端 | httpx (async) |
 | 配置 | pydantic-settings |
 | 日志 | loguru |
@@ -54,7 +53,6 @@ BirdHelp/
 │   ├── pdf.py            # POST /ai/pdf/generate
 │   ├── chat.py           # POST /ai/chat/modify
 │   ├── material.py       # /ai/material/*  素材管理
-│   ├── speech.py         # POST /ai/speech/transcribe
 │   └── ocr.py            # POST /ai/ocr/recognize
 │
 ├── chains/               # LangChain Chain
@@ -70,7 +68,7 @@ BirdHelp/
 ├── rag/                  # RAG 管线
 │   ├── ingestion.py      # 文档加载→清洗→切分→嵌入→入库
 │   ├── retrieval.py      # 混合检索 (向量 + BM25 + RRF)
-│   └── vector_store.py   # ChromaDB / Milvus 管理
+│   └── vector_store.py   # Redis Stack 向量库管理
 │
 ├── generator/            # Office 文件生成
 │   ├── base.py
@@ -81,17 +79,12 @@ BirdHelp/
 ├── services/             # 业务编排
 │   ├── generation.py
 │   ├── chat.py
-│   ├── speech.py
 │   └── ocr.py
 │
 ├── client/               # Java 后端调用
 │   ├── http.py
 │   ├── quota.py
 │   └── file.py
-│
-├── worker/               # Celery
-│   ├── celery_app.py
-│   └── tasks.py
 │
 ├── core/                 # 基础设施
 │   ├── llm.py            # ChatModel 工厂
@@ -116,7 +109,6 @@ BirdHelp/
 | POST | `/ai/word/generate` | 生成 Word (支持 RAG) |
 | POST | `/ai/pdf/generate` | 生成 PDF (支持 RAG) |
 | POST | `/ai/chat/modify` | 对话式修改文档 |
-| POST | `/ai/speech/transcribe` | 语音转文字 |
 | POST | `/ai/ocr/recognize` | OCR 识别 |
 | POST | `/ai/material/upload` | 上传 RAG 参考素材 |
 | GET | `/ai/material/list` | 查询素材列表 |
@@ -141,7 +133,7 @@ BirdHelp/
 用户上传文件 (PDF/DOCX/PPTX/TXT/图片)
   → 类型检测 → LangChain Loader 解析 → 文本清洗
   → RecursiveCharacterTextSplitter (chunk=1000, overlap=200)
-  → Embedding 向量化 → 存入 ChromaDB/Milvus (按 user_id + material_id 隔离)
+  → Embedding 向量化 → 存入 Redis Stack (按 user_id + material_id 隔离)
 
 生成时检索:
   → MultiQueryRetriever (查询改写)
@@ -187,13 +179,13 @@ BirdHelp/
 
 ### Phase 2: RAG 管线 (第 3–5 周)
 - 摄取管道 (解析→切分→嵌入→入库)
-- ChromaDB 集成 + 素材 CRUD API
+- Redis Stack 集成 + 素材 CRUD API
 - 混合检索器 + Query Rewriting
 
 ### Phase 3: 文档生成 (第 6–8 周)
 - PPT / Word / PDF Chain + 文件生成器
 - LangGraph 生成状态图
-- Celery 异步任务 + 文件上传回调
+- 文件生成 + 文件上传回调
 
 ### Phase 4: 对话修改 (第 9–10 周)
 - Chat Chain + LangGraph 对话状态图
@@ -201,8 +193,7 @@ BirdHelp/
 - 多轮对话历史管理
 
 ### Phase 5: 辅助能力 + 上线 (第 11–12 周)
-- Whisper 语音转文字 + PaddleOCR
-- Milvus 迁移 + 熔断/监控
+- PaddleOCR 集成
 - 与 Java 后端联调 + 压测
 
 ---
@@ -211,8 +202,8 @@ BirdHelp/
 
 ```
 fastapi                    langchain                  langchain-openai
-langchain-community        langgraph                  chromadb
+langchain-community        langgraph
 python-pptx                python-docx                pypdf
-paddleocr                  celery                    redis
+paddleocr                  redis
 httpx                      pydantic-settings          loguru
 ```
