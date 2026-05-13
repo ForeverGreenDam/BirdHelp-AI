@@ -1,6 +1,6 @@
 # BirdHelp AI 模块设计文档
 
-> v3.0 | 2026-05-12
+> v3.1 | 2026-05-13
 
 ---
 
@@ -34,7 +34,8 @@ Java 后端（已建成）              Python AI 模块（本项目）
 | PDF OCR 兜底 | PyMuPDF (fitz) + PaddleOCR | PDF 页→图片渲染→OCR，解决扫描版/图片型 PDF |
 | PPT/Word 图片 OCR | python-pptx/docx 图片提取 + PaddleOCR | 导出嵌入图片 blb → OCR 识别 |
 | OCR 引擎 | PaddleOCR | 中文识别准确率高、离线可用、配置简单 |
-| 异步任务 | FastAPI BackgroundTasks | 轻量，不引入 Celery 复杂度 |
+| 同步任务 | FastAPI BackgroundTasks | 轻量场景（素材上传触发摄取），无需额外组件 |
+| 异步任务队列 | SAQ (Simple Async Queue) + Redis | 生成类长任务解耦；复用已有 Redis 做 broker；async 原生，比 Celery 轻；支持自动重试、任务优先级、状态查询 |
 | HTTP 客户端 | httpx (async) | 与 FastAPI 异步模型一致，支持连接池复用 |
 | PDF 页面渲染 (OCR 兜底) | PyMuPDF | 纯 C 实现，比 pdf2image + poppler 更轻，Docker 友好 |
 | 配置 | pydantic-settings | 自动加载 .env + 环境变量 |
@@ -83,6 +84,11 @@ BirdHelp/
 │   ├── generation.py
 │   ├── chat.py
 │   └── ocr.py              # ⬜ OCR 业务逻辑（含 PDF/PPT/Word 图片 OCR）
+│
+├── worker/                 # 异步任务队列（⬜ 待实现）
+│   ├── broker.py           # ⬜ SAQ Queue 初始化 + Redis Broker 连接
+│   ├── jobs.py             # ⬜ 任务定义（ppt_job / word_job / pdf_job）
+│   └── tasks.py            # ⬜ 生成任务协程 + 回调（扣额度 / 退款 / 上传）
 │
 ├── client/                 # Java 后端调用（✅ 已实现）
 │   ├── http.py             # ✅ RSA-SHA256 签名 HTTP 客户端
@@ -218,15 +224,24 @@ _load_docx 提取段落文字
 
 ## 六、核心流程
 
-### 6.1 文档生成 (LangGraph 状态图)
+### 6.1 文档生成（API 快速响应 + Worker 异步执行）
+
+**Phase 3 同步模式（初期）：** API 直接执行生成流程，请求阻塞直到完成。
+
+**Phase 7 异步模式（后期）：** 生成任务推入消息队列，API 立即返回 `task_id`，前端轮询状态。
 
 ```
-开始 → 判断 rag_enabled
-       ├─ YES → RAG 检索 → 注入 context
-       └─ NO  → context = null
-       → LangChain Chain 执行 (Prompt → LLM → JSON 解析)
-       → 解析成功? ── YES → 文件生成 → 上传 Java → 结束
-       └─ NO (重试 ≤3 次) → 回到 LLM 调用
+POST /ai/ppt/generate
+  │
+  ├─ 1. 校验 material_ids + rag_enabled
+  ├─ 2. 扣减额度（quota.consume）
+  ├─ 3. 入队 SAQ Queue → 立即返回 {task_id, status: "queued"}
+  │
+  └─ Worker 异步消费:
+         ├─ RAG 检索 (可选) → 注入 context
+         ├─ LangChain Chain 执行 (Prompt → LLM → JSON 解析)
+         ├─ 解析成功? ── YES → 文件生成 → 上传 Java → 任务完成
+         └─ NO (重试 ≤3 次) → 回到 LLM 调用 │ 仍失败 → 退款 (quota.refund)
 ```
 
 ### 6.2 对话修改
@@ -237,6 +252,84 @@ _load_docx 提取段落文字
   → 代码执行增量编辑 (python-pptx/docx 对象模型)
   → 保存新文件 → 上传
 ```
+
+### 6.3 异步任务架构（Phase 7 引入）
+
+文档生成耗时较长（LLM 推理 10–30s + 文件生成 5–15s），必须异步化以避免 HTTP 超时和阻塞 FastAPI worker 线程。
+
+**选型：SAQ (Simple Async Queue) + Redis**
+
+```
+FastAPI (producer)                     Worker (consumer)
+─────────────────                     ─────────────────
+POST /ai/ppt/generate
+  → enqueue job ──────┐
+  → return {task_id}  │              ┌─ saq worker process
+                       ├─ Redis ───▶ ├─ saq worker process
+客户端轮询:             │  List       └─ saq worker process
+GET /ai/task/{id} ← retrieve status
+```
+
+**为什么选 SAQ 而非 Celery：**
+- 项目历史已经移除了 Celery（`bd2aede`），因其过于沉重
+- SAQ 是轻量 async-native 队列，代码量不到 Celery 的 1/10
+- 复用已有 Redis 做 broker，零额外运维
+- 天然兼容 FastAPI 的 async/await 模型
+- 支持任务优先级、自动重试、任务状态持久化
+
+**任务生命周期状态机：**
+
+```
+queued → running → complete
+               ↘ failed → retry (≤3) → complete
+                            ↘ exhausted → refund_quota → failed
+```
+
+**Worker 内部流程（以 PPT 生成为例）：**
+
+```python
+async def ppt_job(ctx: Context, *, user_id: str, payload: dict):
+    # 1. RAG 检索（可选）
+    context = await retrieve_formatted(user_id, payload["query"]) if payload["rag_enabled"] else ""
+
+    # 2. Chain 执行（含重试）
+    for attempt in range(3):
+        try:
+            result = await ppt_chain.ainvoke({"context": context, **payload})
+            parsed = parse_result(result)
+            break
+        except Exception:
+            if attempt == 2:
+                await refund_quota(user_id)  # 最终失败退款
+                raise
+
+    # 3. 文件生成
+    file_path = await ppt_generator.generate(parsed)
+
+    # 4. 上传 Java 后端
+    await java_upload(file_path, user_id)
+    return {"file_id": ..., "file_name": ..., "file_url": ...}
+```
+
+**API 端调用方式：**
+
+```python
+from worker.broker import queue
+
+@router.post("/ppt/generate")
+async def generate_ppt(payload: GenerateRequest, user: Depends(get_user)):
+    job = await queue.enqueue("ppt_job", user_id=user.id, payload=payload.model_dump())
+    return ApiResponse(code=0, data={"task_id": job.id, "status": "queued"})
+```
+
+**任务状态查询接口：**
+
+```
+GET /ai/task/{task_id}/status → {"task_id": "...", "status": "running", "progress": 0.6}
+GET /ai/task/{task_id}/result → {"task_id": "...", "status": "complete", "data": {...}}
+```
+
+任务状态持久化在 Redis（SAQ 内置 `--web` 可提供 Dashboard）。
 
 ---
 
@@ -261,9 +354,12 @@ _load_docx 提取段落文字
 - 素材删除联动（Java 回收站 + Redis 向量清理）
 - RAG 管线文档 (`doc/RAG_PIPELINE.md`)
 
-### Phase 3: 文档生成（第 1–3 周）
+### Phase 3: 文档生成（第 1–3 周）⚡ 同步模式
 
 **目标：** 用户上传素材后，AI 生成完整 Office 文档。
+
+> **注意：** 本阶段 API 同步执行生成流程（阻塞请求），文档生成耗时较长（20–60s）。
+> 后续 Phase 7 引入消息队列异步化，解耦请求与生成。初期接受同步阻塞，先跑通核心链路。
 
 - LangChain Chain 实现：
   - `ppt_chain.py` — PPT 大纲 Prompt + LLM + JSON OutputParser
@@ -293,11 +389,11 @@ _load_docx 提取段落文字
 ### Phase 5: 辅助能力 + 上线（第 6–7 周）
 
 - REST API 路由全部注册
-- 异步任务状态接口 (`GET /ai/task/{task_id}/status`)
 - `services/` 业务编排层（generation / chat / ocr service）
-- 与 Java 后端联调（生成接口的完整调用链）
-- 额度消耗 / 退还的完整流程验证
-- 异常场景覆盖（生成超时、文件损坏、额度不足）
+- 与 Java 后端联调（生成接口的完整调用链：提交 → 等待 → 生成 → 上传）
+- 额度消耗 / 退还的完整流程验证（含失败退款）
+- 异常场景覆盖（生成超时、文件损坏、额度不足、LLM 返回格式异常）
+- 日志 + 链路追踪
 - 性能压测 + 并发安全
 
 ### Phase 6: OCR 兜底 + 图片识别（后续迭代）
@@ -331,6 +427,57 @@ _load_docx 提取段落文字
    - 超时控制（大文件页数上限、单页超时）
    - GPU 加速支持（PaddleOCR 可选 CUDA 后端）
 
+### Phase 7: 异步任务队列（后续迭代）
+
+> **优先级：低。** Phase 3–4 先以同步模式跑通，此阶段在时间充裕且生成耗时成为瓶颈时进行。
+
+**背景：** 文档生成的耗时大头在 LLM 推理（10–30s）和 Office 文件构建（5–15s），单次生成累计可达 20–60 秒。如果 API 同步阻塞执行：HTTP 易超时、FastAPI worker 被占满、前端体验差。引入消息队列解耦提交与执行。
+
+**技术选型：**
+
+| 选项 | 放弃理由 | 选用理由 |
+|------|----------|----------|
+| Celery + Redis | 项目历史已将其移除（`bd2aede`, `refactor`），过于沉重 | — |
+| **SAQ + Redis** | — | async 原生，不足千行代码；复用已有 Redis 做 broker，零额外运维；天然兼容 FastAPI；支持自动重试、优先级、Dashboard |
+
+**子任务：**
+
+1. **Worker 框架搭建**
+   - `worker/broker.py` — SAQ Queue 初始化，复用已配置的 Redis 连接
+   - `worker/tasks.py` — 生成任务协程定义（`ppt_task`、`word_task`、`pdf_task`）
+   - `worker/jobs.py` — 业务回调：`on_complete`（通知/日志）、`on_failure`（退款 + 错误记录）
+   - 依赖新增：`saq`
+
+2. **API 层适配**
+   - 生成接口（`ppt.py`、`word.py`、`pdf.py`）改为入队模式：`enqueue` → 返回 `task_id`
+   - 新增 `GET /ai/task/{task_id}/status` — 实时查询任务状态
+   - 新增 `GET /ai/task/{task_id}/result` — 完成后获取结果数据
+
+3. **任务状态管理**
+   - SAQ 内置 Job 状态 → 映射到前端展示：`queued` / `running` / `complete` / `failed`
+   - 进度上报（可选）：`ctx.info["progress"] = 0.6`，前端轮询显示进度条
+   - 任务过期清理：TTL 24 小时，避免 Redis 堆积
+
+4. **Worker 进程管理**
+   - 独立 Worker 进程：`saq worker.py --workers 3`（可配置并发数）
+   - systemd / Docker 容器内与 API 一起启动（`Procfile` 或 `docker-compose`）
+   - 优雅关闭：`SIGTERM → 等待当前任务完成 → 退出`
+
+5. **故障恢复**
+   - 任务重试：执行失败自动重试 ≤3 次（SAQ 内置）
+   - 最终失败：退还额度（`quota.refund`）+ 记录错误日志
+   - Worker 崩溃：任务重回队列（SAQ 的 `at_least_once` 语义 + Redis 持久化）
+
+**架构对比：**
+
+| | Phase 3 同步模式 | Phase 7 异步模式 |
+|------|------|------|
+| API 响应时间 | 20–60s（阻塞） | < 200ms（仅入队） |
+| 并发能力 | 受 FastAPI worker 数限制 | Worker 可独立横向扩容 |
+| 超时风险 | 高（HTTP/网关超时） | 无（WebSocket/轮询获取结果） |
+| 故障隔离 | 生成崩溃影响 API | Worker 独立，崩溃任务自动重试 |
+| 运维复杂度 | 低（无额外进程） | 中（需管理 Worker 进程） |
+
 ---
 
 ## 八、核心依赖
@@ -348,6 +495,9 @@ redis
 
 # HTTP 客户端
 httpx
+
+# 异步任务队列（Phase 7 新增）
+saq                        # Simple Async Queue，Redis 背书，async 原生
 
 # OCR（Phase 6 新增 PyMuPDF）
 paddleocr                  paddlepaddle
