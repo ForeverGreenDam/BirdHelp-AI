@@ -12,7 +12,7 @@ from loguru import logger
 from config import settings
 from client.file import download as java_download
 from rag.vector_store import add_documents
-from utils.file import temp_file_path, ensure_temp_dir
+from utils.file import temp_file_path
 
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".txt"}
@@ -86,13 +86,16 @@ def _get_splitter() -> RecursiveCharacterTextSplitter:
 
 # ── 主流程 ──
 
-async def ingest_from_java(
+async def ingest_file(
+    file_path: str,
     user_id: str,
     project_id: str,
-    java_file_id: int,
+    material_id: int,
     file_name: str = "unknown",
 ) -> dict:
-    """从 Java 后端下载文件，解析→切分→嵌入→入库，返回摄取统计。
+    """解析本地文件 → 切分 → 嵌入 → 入库，返回摄取统计。
+
+    适用于 Java 端已完成上传+下载、直接传递本地文件的场景。
 
     Returns:
         {"file_id": int, "chunk_count": int, "file_name": str}
@@ -101,51 +104,64 @@ async def ingest_from_java(
     if ext not in SUPPORTED_EXTENSIONS:
         raise ValueError(f"不支持的文件格式: {ext}，支持: {SUPPORTED_EXTENSIONS}")
 
-    # 1. 下载到临时文件
+    # 1. 解析文档
+    loader_cls = _detect_loader(ext)
+    if ext == ".pdf":
+        loader = loader_cls(file_path)
+        raw_docs = loader.load()
+    else:
+        raw_docs = loader_cls(file_path)
+
+    if not raw_docs:
+        raise ValueError("文档解析结果为空，文件可能损坏或为空文件")
+
+    # 2. 合并大文本 + 切分
+    full_text = "\n\n".join(d.page_content for d in raw_docs)
+    splitter = _get_splitter()
+    chunks = splitter.create_documents(
+        texts=[full_text],
+        metadatas=[{
+            "material_id": material_id,
+            "user_id": user_id,
+            "project_id": project_id,
+            "file_name": file_name,
+            "source": "java_upload",
+        }],
+    )
+    for i, chunk in enumerate(chunks):
+        chunk.metadata["chunk_index"] = i
+
+    # 3. 嵌入 + 入库
+    ids = add_documents(user_id, project_id, chunks)
+    logger.info(f"Ingested file #{material_id} → project {project_id}: {len(ids)} chunks")
+
+    return {
+        "file_id": material_id,
+        "chunk_count": len(ids),
+        "file_name": file_name,
+    }
+
+
+async def ingest_from_java(
+    user_id: str,
+    project_id: str,
+    java_file_id: int,
+    file_name: str = "unknown",
+) -> dict:
+    """从 Java 后端下载文件，解析→切分→嵌入→入库，返回摄取统计。"""
+    ext = Path(file_name).suffix.lower()
     tmp_path = temp_file_path(ext)
     await java_download(java_file_id, save_path=str(tmp_path))
     logger.info(f"Downloaded file #{java_file_id} → {tmp_path}")
 
     try:
-        # 2. 解析文档
-        loader_cls = _detect_loader(ext)
-        if ext == ".pdf":
-            loader = loader_cls(str(tmp_path))
-            raw_docs = loader.load()
-        else:
-            raw_docs = loader_cls(str(tmp_path))
-
-        if not raw_docs:
-            raise ValueError("文档解析结果为空，文件可能损坏或为空文件")
-
-        # 3. 合并大文本 + 切分
-        full_text = "\n\n".join(d.page_content for d in raw_docs)
-        splitter = _get_splitter()
-        chunks = splitter.create_documents(
-            texts=[full_text],
-            metadatas=[{
-                "material_id": java_file_id,
-                "user_id": user_id,
-                "project_id": project_id,
-                "file_name": file_name,
-                "source": "java_upload",
-            }],
+        return await ingest_file(
+            file_path=str(tmp_path),
+            user_id=user_id,
+            project_id=project_id,
+            material_id=java_file_id,
+            file_name=file_name,
         )
-        # 为每个 chunk 追加 chunk_index
-        for i, chunk in enumerate(chunks):
-            chunk.metadata["chunk_index"] = i
-
-        # 4. 嵌入 + 入库
-        ids = add_documents(user_id, project_id, chunks)
-        logger.info(f"Ingested file #{java_file_id} → project {project_id}: {len(ids)} chunks")
-
-        return {
-            "file_id": java_file_id,
-            "chunk_count": len(ids),
-            "file_name": file_name,
-        }
-
     finally:
-        # 5. 清理临时文件
         if tmp_path.exists():
             tmp_path.unlink()

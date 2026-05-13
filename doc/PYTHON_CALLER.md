@@ -258,16 +258,19 @@ public class AiModuleCaller {
 ### 5.3 POST /ai/material/upload — 上传素材并触发 RAG 摄取
 
 > Multipart 请求。签名时 BODY 为完整的 multipart 编码请求体，**不是**仅字段的 JSON。
+>
+> **调用流程**：Java 端先自行完成文件上传至存储（拿到 `javaFileId`），再调用本接口将已下载的文件传递给 AI 模块进行 RAG 摄取。
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `file` | file | 是 | 上传的文件 |
+| `file` | file | 是 | 已从 Java 存储下载的文件 |
 | `userId` | long | 是 | 用户 ID |
 | `projectId` | long | 是 | 项目 ID，用于隔离知识库 |
+| `javaFileId` | long | 是 | Java 端文件存储后返回的文件 ID，用于向量索引关联 |
 
 ```java
 byte[] fileContent = Files.readAllBytes(Path.of("material.pdf"));
-var fields = Map.of("userId", "1", "projectId", "5");
+var fields = Map.of("userId", "1", "projectId", "5", "javaFileId", "42");
 HttpResponse<String> resp = AiModuleCaller.signedMultipartRequest(
     "/ai/material/upload", fields,
     "file", "material.pdf", fileContent, "application/octet-stream"
@@ -387,11 +390,11 @@ HttpResponse<String> resp = AiModuleCaller.signedNoBodyRequest(
 ### 5.7 快速调用汇总
 
 ```java
-// 素材上传
+// 素材上传（Java 端先上传文件至存储拿到 fileId，再调用本接口传递已下载的文件）
 byte[] fileContent = Files.readAllBytes(Path.of("material.pdf"));
 AiModuleCaller.signedMultipartRequest(
     "/ai/material/upload",
-    Map.of("userId", "1", "projectId", "5"),
+    Map.of("userId", "1", "projectId", "5", "javaFileId", "42"),
     "file", "material.pdf", fileContent, "application/octet-stream"
 );
 

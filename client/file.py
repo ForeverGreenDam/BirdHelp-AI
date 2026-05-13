@@ -32,10 +32,3 @@ async def download(file_id: int, save_path: str = "") -> bytes:
     """
     return await _download(f"{INTERNAL}/{file_id}/download", save_path=save_path)
 
-
-async def delete(file_id: int, user_id: int) -> dict:
-    """软删除文件，移入回收站（30 天自动清理）。
-
-    对应 DELETE /api/internal/file/{id}?userId=…。
-    """
-    return await _del(f"{INTERNAL}/{file_id}", params={"userId": str(user_id)})
