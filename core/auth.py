@@ -12,7 +12,7 @@ import time
 from fastapi import Request, HTTPException
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
-from cryptography.hazmat.exceptions import InvalidSignature
+from cryptography.exceptions import InvalidSignature
 
 from config import settings
 
