@@ -1,6 +1,6 @@
-"""Redis Stack 向量存储管理 — 用户粒度索引隔离。
+"""Redis Stack 向量存储管理 — 用户+项目粒度索引隔离。
 
-每个用户独立 Redis FT.INDEX: rag_user_{user_id}。
+每个用户-项目组合独立 Redis FT.INDEX: rag_{user_id}_{project_id}。
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ from core.embedding import create_embeddings
 # 命名规则
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _index_name(user_id: str) -> str:
-    return f"rag_user_{user_id}"
+def _index_name(user_id: str, project_id: str) -> str:
+    return f"rag_{user_id}_{project_id}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -40,21 +40,21 @@ def _get_redis() -> RedisClient:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 索引 schema（material_id 作为 TAG 字段以支持按素材删除）
+# 索引 schema（material_id / project_id 作为 TAG 字段以支持过滤和删除）
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _INDEX_SCHEMA = {
-    "tag": [{"name": "material_id"}],
+    "tag": [{"name": "material_id"}, {"name": "project_id"}],
 }
 
 
-def get_vectorstore(user_id: str):
-    """获取用户专属的 Redis 向量存储实例。"""
+def get_vectorstore(user_id: str, project_id: str):
+    """获取用户+项目专属的 Redis 向量存储实例。"""
     from langchain_community.vectorstores.redis import Redis
 
     return Redis(
         redis_client=_get_redis(),
-        index_name=_index_name(user_id),
+        index_name=_index_name(user_id, project_id),
         embedding=create_embeddings(),
         index_schema=_INDEX_SCHEMA,
     )
@@ -64,18 +64,18 @@ def get_vectorstore(user_id: str):
 # CRUD 操作
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def add_documents(user_id: str, docs: list) -> list[str]:
+def add_documents(user_id: str, project_id: str, docs: list) -> list[str]:
     """嵌入文档列表并写入向量库，返回 ID 列表。"""
-    store = get_vectorstore(user_id)
+    store = get_vectorstore(user_id, project_id)
     return store.add_documents(docs)
 
 
-def delete_by_material(user_id: str, material_id: int) -> int:
+def delete_by_material(user_id: str, project_id: str, material_id: int) -> int:
     """按 material_id 删除该素材对应的所有 chunk。返回删除数量。"""
     from redis.commands.search.query import Query
 
     r = _get_redis()
-    index_name = _index_name(user_id)
+    index_name = _index_name(user_id, project_id)
     try:
         results = r.ft(index_name).search(
             Query(f"@material_id:{{{material_id}}}")
@@ -88,10 +88,10 @@ def delete_by_material(user_id: str, material_id: int) -> int:
     return len(doc_ids)
 
 
-def get_all_documents(user_id: str) -> list[Document]:
-    """获取用户全部已入库文档（用于构建 BM25 索引）。"""
+def get_all_documents(user_id: str, project_id: str) -> list[Document]:
+    """获取用户+项目全部已入库文档（用于构建 BM25 索引）。"""
     r = _get_redis()
-    index_name = _index_name(user_id)
+    index_name = _index_name(user_id, project_id)
     docs: list[Document] = []
     for key in r.scan_iter(match=f"{index_name}:*", count=100):
         raw = r.hgetall(key)

@@ -88,6 +88,7 @@ def _get_splitter() -> RecursiveCharacterTextSplitter:
 
 async def ingest_from_java(
     user_id: str,
+    project_id: str,
     java_file_id: int,
     file_name: str = "unknown",
 ) -> dict:
@@ -125,6 +126,7 @@ async def ingest_from_java(
             metadatas=[{
                 "material_id": java_file_id,
                 "user_id": user_id,
+                "project_id": project_id,
                 "file_name": file_name,
                 "source": "java_upload",
             }],
@@ -134,8 +136,8 @@ async def ingest_from_java(
             chunk.metadata["chunk_index"] = i
 
         # 4. 嵌入 + 入库
-        ids = add_documents(user_id, chunks)
-        logger.info(f"Ingested file #{java_file_id}: {len(ids)} chunks")
+        ids = add_documents(user_id, project_id, chunks)
+        logger.info(f"Ingested file #{java_file_id} → project {project_id}: {len(ids)} chunks")
 
         return {
             "file_id": java_file_id,

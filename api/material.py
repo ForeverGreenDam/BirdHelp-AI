@@ -32,6 +32,7 @@ def _ext_to_file_type(ext: str) -> int:
 @router.post("/upload")
 async def upload_material(
     user_id: int = Form(..., description="用户 ID"),
+    project_id: str = Form(..., description="项目 ID，用于隔离知识库"),
     file: UploadFile = File(...),
 ):
     """上传参考素材并触发 RAG 摄取。
@@ -65,6 +66,7 @@ async def upload_material(
         # 3. RAG 摄取（下载 → 解析 → 切分 → 嵌入 → 入库）
         ingest_result = await ingest_from_java(
             user_id=str(user_id),
+            project_id=project_id,
             java_file_id=int(java_file_id),
             file_name=file.filename,
         )
@@ -100,13 +102,14 @@ async def list_materials(
 async def delete_material(
     material_id: int,
     user_id: int = Query(..., description="用户 ID"),
+    project_id: str = Query(..., description="项目 ID，用于定位对应知识库"),
 ):
     """删除素材：Java 后端软删除（移入回收站）+ Redis 向量清理。"""
     # 1. Java 软删除
     await java_delete(material_id)
 
     # 2. 清理向量数据
-    removed = delete_by_material(str(user_id), material_id)
-    logger.info(f"Deleted material #{material_id}: removed {removed} vectors")
+    removed = delete_by_material(str(user_id), project_id, material_id)
+    logger.info(f"Deleted material #{material_id} from project {project_id}: removed {removed} vectors")
 
     return ApiResponse(code=0, message="success", data={"deleted_chunks": removed})

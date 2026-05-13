@@ -65,26 +65,3 @@ async def search_files(
 async def delete(file_id: int) -> dict:
     """软删除文件，移入回收站（30 天自动清理）。"""
     return await _del(f"{PUBLIC}/{file_id}")
-
-
-async def restore(file_id: int) -> dict:
-    """从回收站恢复文件。"""
-    return await put(f"{PUBLIC}/{file_id}/restore")
-
-
-async def permanent_delete(file_id: int) -> dict:
-    """永久删除文件（不可恢复）。"""
-    return await _del(f"{PUBLIC}/{file_id}/permanent")
-
-
-async def recycle_list(
-    user_id: int,
-    page: int = 1,
-    page_size: int = 20,
-) -> dict:
-    """查询回收站文件列表。"""
-    return await get(f"{PUBLIC}/recycle", {
-        "userId": user_id,
-        "page": page,
-        "pageSize": page_size,
-    })

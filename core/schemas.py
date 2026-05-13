@@ -34,6 +34,7 @@ class ApiResponse(BaseModel):
 class GenerateRequest(BaseModel):
     """文档生成基类请求，包含 RAG 相关可选字段。"""
     user_id: str = Field(..., description="用户 ID")
+    project_id: str = Field(..., description="项目 ID，用于隔离知识库")
     topic: str = Field(..., description="文档主题")
     language: str = Field(default="zh", description="zh / en")
     extra_prompt: str | None = Field(default=None, description="用户补充指令")
@@ -78,6 +79,7 @@ class ChatMessage(BaseModel):
 class ChatModifyRequest(BaseModel):
     """对话式修改文档的请求体。"""
     user_id: str
+    project_id: str = Field(..., description="项目 ID，用于隔离知识库")
     session_id: str
     file_id: str = Field(..., description="当前编辑的文档 ID")
     message: str = Field(..., description="用户修改指令")

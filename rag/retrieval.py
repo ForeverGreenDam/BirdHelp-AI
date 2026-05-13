@@ -16,7 +16,7 @@ from core.llm import create_chat_model
 from rag.vector_store import get_vectorstore, get_all_documents
 
 
-def _build_ensemble(user_id: str, k: int | None = None) -> EnsembleRetriever:
+def _build_ensemble(user_id: str, project_id: str, k: int | None = None) -> EnsembleRetriever:
     """构建向量 + BM25 混合检索器（RRF 融合）。
 
     每次调用都会用向量库中的最新文档重建 BM25 索引。
@@ -24,13 +24,13 @@ def _build_ensemble(user_id: str, k: int | None = None) -> EnsembleRetriever:
     top_k = k or settings.retrieval_top_k
 
     # 向量检索器
-    vectorstore = get_vectorstore(user_id)
+    vectorstore = get_vectorstore(user_id, project_id)
     vector_retriever = vectorstore.as_retriever(search_kwargs={"k": top_k * 2})
 
     # BM25 关键词检索器（从向量库加载全部文档构建索引）
-    all_docs = get_all_documents(user_id)
+    all_docs = get_all_documents(user_id, project_id)
     if not all_docs:
-        logger.warning(f"User {user_id} has no indexed documents, fallback to vector only")
+        logger.warning(f"User {user_id} project {project_id} has no indexed documents, fallback to vector only")
         return EnsembleRetriever(
             retrievers=[vector_retriever],
             weights=[1.0],
@@ -47,6 +47,7 @@ def _build_ensemble(user_id: str, k: int | None = None) -> EnsembleRetriever:
 
 async def retrieve(
     user_id: str,
+    project_id: str,
     query: str,
     top_k: int | None = None,
     use_multiquery: bool = True,
@@ -55,12 +56,13 @@ async def retrieve(
 
     Args:
         user_id: 用户 ID，用于隔离向量库
+        project_id: 项目 ID，用于隔离向量库
         query: 用户原始查询
         top_k: 返回文档数量，默认取配置值
         use_multiquery: 是否启用 MultiQuery 改写（默认开启）
     """
     k = top_k or settings.retrieval_top_k
-    ensemble = _build_ensemble(user_id, k)
+    ensemble = _build_ensemble(user_id, project_id, k)
 
     if use_multiquery:
         llm = create_chat_model()
@@ -85,11 +87,12 @@ async def retrieve(
 
 async def retrieve_formatted(
     user_id: str,
+    project_id: str,
     query: str,
     top_k: int | None = None,
 ) -> str:
     """检索并格式化为 Prompt 可注入的 context 文本。"""
-    docs = await retrieve(user_id, query, top_k)
+    docs = await retrieve(user_id, project_id, query, top_k)
     if not docs:
         return ""
 
