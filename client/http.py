@@ -8,6 +8,7 @@
 import base64
 import time
 import uuid
+from pathlib import Path
 
 import httpx
 from cryptography.hazmat.primitives import hashes, serialization
@@ -72,24 +73,36 @@ async def post(path: str, json_body: dict | None = None) -> dict:
 async def upload_file(path: str, file_path: str, fields: dict | None = None) -> dict:
     """以 multipart/form-data 上传文件到 Java 后端。
 
-    文件内容不参与签名，签名仅基于 fields 的 JSON 序列化值。
+    通过同步 Client.build_request 先拿到完整 multipart 编码请求体，
+    再对其签名，确保签名与实际发送的报文一致。
     """
     fields = fields or {}
-    body_str = _dump_json(fields)
-    headers = _make_headers("POST", path, body_str)
+    filename = Path(file_path).name
 
+    with open(file_path, "rb") as f:
+        file_content = f.read()
+
+    # 1. 用同步 Client 构建请求，获取完整 multipart 请求体与 Content-Type
+    with httpx.Client(base_url=settings.java_base_url) as sync_client:
+        req = sync_client.build_request(
+            "POST", path,
+            files={"file": (filename, file_content, "application/octet-stream")},
+            data=fields,
+        )
+        body_bytes = req.read()
+        content_type = req.headers.get("content-type", "")
+
+    # 2. 基于完整请求体生成签名
+    body_str = body_bytes.decode("utf-8", errors="replace")
+    headers = _make_headers("POST", path, body_str)
+    headers["Content-Type"] = content_type
+
+    # 3. 发送请求
     async with httpx.AsyncClient(
         base_url=settings.java_base_url,
         timeout=60.0,
     ) as c:
-        headers.pop("Content-Type", None)
-        with open(file_path, "rb") as f:
-            resp = await c.post(
-                path,
-                files={"file": f},
-                data=fields,
-                headers=headers,
-            )
+        resp = await c.post(path, content=body_bytes, headers=headers)
         resp.raise_for_status()
         return resp.json()
 

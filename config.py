@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     java_api_prefix: str = "/api"
     java_private_key_b64: str = ""
     java_sign_timeout_seconds: int = 300
+    java_caller_public_key_b64: str = ""
 
     # ── 大模型 ──
     llm_api_key: str = ""

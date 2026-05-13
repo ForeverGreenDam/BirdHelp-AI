@@ -38,15 +38,32 @@ pip install -r requirements.txt
 
 ## Java Backend Contract
 
-AI 模块需要调用 Java 后端的三个内部接口（带 internal token 鉴权）:
+与 Java 后端的双向通信均使用 **RSA-SHA256 签名**（2048 位），无传统 Token。
+
+**AI → Java**（详见 `doc/MD_CALLER.md`）:
 
 | 接口 | 调用时机 |
 |------|---------|
-| `POST /internal/quota/consume` | 生成开始前扣额度 |
-| `POST /internal/quota/refund` | 生成失败退额度 |
-| `POST /internal/file/upload` | 文件生成完成后上传 |
+| `POST /api/internal/quota/consume` | 生成开始前扣额度 |
+| `POST /api/internal/quota/refund` | 生成失败退额度 |
+| `POST /api/internal/file/upload` | 文件上传（素材 / 生成结果） |
+| `GET /api/internal/file/{id}/download` | 文件下载 |
+| `DELETE /api/internal/file/{id}` | 软删除文件 |
 
-AI 模块对外暴露的接口由 Java 后端代理转发给前端，AI 模块不直接面向用户。
+**Java → AI**（详见 `doc/PYTHON_CALLER.md`）:
+
+| 接口 | 说明 |
+|------|------|
+| `POST /ai/material/upload` | 上传素材并触发 RAG 摄取 |
+| `DELETE /ai/material/{id}` | 删除素材（回收站 + 向量清理） |
+| `POST /ai/ppt/generate` | 生成 PPT（Phase 3） |
+| `POST /ai/word/generate` | 生成 Word（Phase 3） |
+| `POST /ai/pdf/generate` | 生成 PDF（Phase 3） |
+| `POST /ai/chat/modify` | 对话式修改文档（Phase 5） |
+| `POST /ai/ocr/recognize` | OCR 识别（Phase 4） |
+| `GET /ai/task/{task_id}/status` | 任务状态查询（Phase 7） |
+
+> 两个方向使用**独立的**密钥对，不可混用。AI 模块对外暴露的接口由 Java 后端代理转发给前端，AI 模块不直接面向用户。
 
 ## Key Tech Stack
 
