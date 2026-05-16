@@ -14,7 +14,7 @@ from graph.generation_graph import get_generation_graph
 async def generate_ppt(request: PptGenerateRequest) -> dict:
     """执行 PPT 生成的完整业务流程。"""
     user_id_int = int(request.user_id)
-    related_id = int(request.callback_id) if request.callback_id else None
+    related_id = request.callback_id or None
     quota_consumed = False
     file_path = ""
 
@@ -88,7 +88,7 @@ async def generate_ppt(request: PptGenerateRequest) -> dict:
 async def generate_word(request: WordGenerateRequest) -> dict:
     """执行 Word 生成的完整业务流程。"""
     user_id_int = int(request.user_id)
-    related_id = int(request.callback_id) if request.callback_id else None
+    related_id = request.callback_id or None
     quota_consumed = False
     file_path = ""
 
@@ -162,7 +162,7 @@ async def generate_word(request: WordGenerateRequest) -> dict:
 async def generate_pdf(request: PdfGenerateRequest) -> dict:
     """执行 PDF 生成的完整业务流程。"""
     user_id_int = int(request.user_id)
-    related_id = int(request.callback_id) if request.callback_id else None
+    related_id = request.callback_id or None
     quota_consumed = False
     file_path = ""
 
@@ -242,7 +242,7 @@ def _quota_success(result: dict) -> bool:
     return result.get("code") == 0
 
 
-async def _safe_refund(user_id: int, related_id: int | None) -> None:
+async def _safe_refund(user_id: int, related_id: str | None) -> None:
     """安全退款，失败仅记日志，不遮蔽原始异常。"""
     try:
         await refund_quota(user_id, related_id)

@@ -1,6 +1,6 @@
 # BirdHelp AI 模块设计文档
 
-> v3.2 | 2026-05-16 | Phase 3 PPT 已完成
+> v3.3 | 2026-05-16 | Phase 3 全部完成 (PPT / Word / PDF)
 
 ---
 
@@ -35,7 +35,7 @@ Java 后端（已建成）              Python AI 模块（本项目）
 | PPT/Word 图片 OCR | python-pptx/docx 图片提取 + PaddleOCR | 导出嵌入图片 blb → OCR 识别 |
 | OCR 引擎 | PaddleOCR | 中文识别准确率高、离线可用、配置简单 |
 | 同步任务 | FastAPI BackgroundTasks | 轻量场景（素材上传触发摄取），无需额外组件 |
-| 异步任务队列 | SAQ (Simple Async Queue) + Redis | 生成类长任务解耦；复用已有 Redis 做 broker；async 原生，比 Celery 轻；支持自动重试、任务优先级、状态查询 |
+| 异步任务队列 | RabbitMQ + aio-pika | 生成类长任务解耦；成熟可靠的消息中间件；支持 ACK/重试/死信队列；aio-pika 提供 async 原生 API，兼容 FastAPI |
 | HTTP 客户端 | httpx (async) | 与 FastAPI 异步模型一致，支持连接池复用 |
 | PDF 页面渲染 (OCR 兜底) | PyMuPDF | 纯 C 实现，比 pdf2image + poppler 更轻，Docker 友好 |
 | 配置 | pydantic-settings | 自动加载 .env + 环境变量 |
@@ -50,8 +50,8 @@ BirdHelp/
 ├── main.py
 ├── config.py
 │
-├── api/                    # 对外 API（✅ 已实现: router, material, ppt）
-│   ├── router.py           #   │ 待实现: ppt, word, pdf, chat, ocr
+├── api/                    # 对外 API（✅ 已实现: router, material, ppt, word, pdf）
+│   ├── router.py           #   │ 待实现: chat, ocr
 │   ├── material.py         # ✅ POST /ai/material/upload
 │   ├── ppt.py              # ✅ POST /ai/ppt/generate
 │   ├── word.py             # ✅ POST /ai/word/generate
@@ -59,15 +59,15 @@ BirdHelp/
 │   ├── chat.py             # ⬜ POST /ai/chat/modify
 │   └── ocr.py              # ⬜ POST /ai/ocr/recognize
 │
-├── chains/                 # LangChain Chain（✅ ppt_chain 已实现）
+├── chains/                 # LangChain Chain（✅ ppt / word / pdf 已实现）
 │   ├── ppt_chain.py        # ✅ PPT 大纲生成 Chain
 │   ├── word_chain.py       # ✅ Word 内容生成 Chain
 │   ├── pdf_chain.py        # ✅ PDF 内容生成 Chain
-│   └── chat_chain.py
+│   └── chat_chain.py       # ⬜ 对话修改 Chain
 │
 ├── graph/                  # LangGraph 工作流（✅ generation_graph 已实现）
-│   ├── generation_graph.py # ✅ PPT 生成状态图 (RAG→Chain→校验→重试→构建)
-│   └── chat_graph.py       # 对话修改状态图
+│   ├── generation_graph.py # ✅ 文档生成状态图 (RAG→Chain→校验→重试→构建)
+│   └── chat_graph.py       # ⬜ 对话修改状态图
 │
 ├── rag/                    # RAG 管线（✅ 已实现）
 │   ├── ingestion.py        # ✅ 文档下载→解析→切分→嵌入→入库
@@ -81,14 +81,14 @@ BirdHelp/
 │   └── pdf.py              # ✅ PDF 生成器（python-docx → LibreOffice）
 │
 ├── services/               # 业务编排（✅ 已实现: generation）
-│   ├── generation.py      # ✅ PPT 生成业务编排（额度→生成→上传→退款）
-│   ├── chat.py
-│   └── ocr.py              # ⬜ OCR 业务逻辑（含 PDF/PPT/Word 图片 OCR）
+│   ├── generation.py      # ✅ 文档生成业务编排（额度→生成→上传→退款，支持 PPT/Word/PDF）
+│   ├── chat.py            # ⬜ 对话修改业务编排
+│   └── ocr.py             # ⬜ OCR 业务逻辑（含 PDF/PPT/Word 图片 OCR）
 │
 ├── worker/                 # 异步任务队列（⬜ 待实现）
-│   ├── broker.py           # ⬜ SAQ Queue 初始化 + Redis Broker 连接
-│   ├── jobs.py             # ⬜ 任务定义（ppt_job / word_job / pdf_job）
-│   └── tasks.py            # ⬜ 生成任务协程 + 回调（扣额度 / 退款 / 上传）
+│   ├── broker.py           # ⬜ RabbitMQ 连接管理 + 队列/交换机声明
+│   ├── producer.py         # ⬜ 消息生产者（发布生成任务到队列）
+│   └── consumer.py         # ⬜ 消息消费者（消费任务 → 生成 → 回调）
 │
 ├── client/                 # Java 后端调用（✅ 已实现）
 │   ├── http.py             # ✅ RSA-SHA256 签名 HTTP 客户端
@@ -257,69 +257,87 @@ POST /ai/ppt/generate
 
 文档生成耗时较长（LLM 推理 10–30s + 文件生成 5–15s），必须异步化以避免 HTTP 超时和阻塞 FastAPI worker 线程。
 
-**选型：SAQ (Simple Async Queue) + Redis**
+**选型：RabbitMQ + aio-pika**
 
 ```
 FastAPI (producer)                     Worker (consumer)
 ─────────────────                     ─────────────────
 POST /ai/ppt/generate
-  → enqueue job ──────┐
-  → return {task_id}  │              ┌─ saq worker process
-                       ├─ Redis ───▶ ├─ saq worker process
-客户端轮询:             │  List       └─ saq worker process
-GET /ai/task/{id} ← retrieve status
+  → publish message ───┐
+  → return {task_id}   │              ┌─ consumer process
+                        ├─ RabbitMQ ─▶├─ consumer process
+客户端轮询:              │  Queue      └─ consumer process
+GET /ai/task/{id} ← retrieve status ← Redis
 ```
 
-**为什么选 SAQ 而非 Celery：**
-- 项目历史已经移除了 Celery（`bd2aede`），因其过于沉重
-- SAQ 是轻量 async-native 队列，代码量不到 Celery 的 1/10
-- 复用已有 Redis 做 broker，零额外运维
-- 天然兼容 FastAPI 的 async/await 模型
-- 支持任务优先级、自动重试、任务状态持久化
+**为什么选 RabbitMQ 而非 Celery / SAQ：**
+- RabbitMQ 是成熟可靠的消息中间件，社区庞大、文档丰富、运维经验充足
+- 支持灵活的路由策略（Direct / Topic / Fanout），便于后续扩展不同优先级和类型的任务
+- 内置消息确认（ACK）+ 死信队列（DLX），天然支持重试和故障恢复
+- aio-pika 提供 async 原生的 Python 客户端，完美兼容 FastAPI 的 async/await 模型
+- 任务状态用 Redis 维护（复用已有实例），RabbitMQ 只做消息投递，职责清晰
+
+**消息流设计：**
+
+```
+Exchange: birdhelp.tasks (direct)
+  ├── Routing Key: ppt.generate   → Queue: birdhelp.ppt.queue
+  ├── Routing Key: word.generate  → Queue: birdhelp.word.queue
+  └── Routing Key: pdf.generate   → Queue: birdhelp.pdf.queue
+
+Dead Letter Exchange: birdhelp.dlx (direct)
+  └── Routing Key: failed → Queue: birdhelp.failed.queue
+```
 
 **任务生命周期状态机：**
 
 ```
 queued → running → complete
                ↘ failed → retry (≤3) → complete
-                            ↘ exhausted → refund_quota → failed
+                            ↘ exhausted → DLX → refund_quota → failed
 ```
 
 **Worker 内部流程（以 PPT 生成为例）：**
 
 ```python
-async def ppt_job(ctx: Context, *, user_id: str, payload: dict):
-    # 1. RAG 检索（可选）
-    context = await retrieve_formatted(user_id, payload["query"]) if payload["rag_enabled"] else ""
+import aio_pika
+import json
 
-    # 2. Chain 执行（含重试）
-    for attempt in range(3):
-        try:
-            result = await ppt_chain.ainvoke({"context": context, **payload})
-            parsed = parse_result(result)
-            break
-        except Exception:
-            if attempt == 2:
-                await refund_quota(user_id)  # 最终失败退款
-                raise
+async def on_ppt_message(message: aio_pika.IncomingMessage):
+    async with message.process():
+        payload = json.loads(message.body)
+        user_id = payload["user_id"]
 
-    # 3. 文件生成
-    file_path = await ppt_generator.generate(parsed)
+        # 1. RAG 检索（可选）
+        context = await retrieve_formatted(user_id, payload["query"]) if payload["rag_enabled"] else ""
 
-    # 4. 上传 Java 后端
-    await java_upload(file_path, user_id)
-    return {"file_id": ..., "file_name": ..., "file_url": ...}
+        # 2. Chain 执行（含重试，利用 DLX 实现最多 3 次）
+        result = await ppt_chain.ainvoke({"context": context, **payload})
+        parsed = parse_result(result)
+
+        # 3. 文件生成
+        file_path = await ppt_generator.generate(parsed)
+
+        # 4. 上传 Java 后端
+        await java_upload(file_path, user_id)
+
+        # 5. 更新任务状态
+        await update_task_status(payload["task_id"], "complete", result={...})
 ```
 
 **API 端调用方式：**
 
 ```python
-from worker.broker import queue
+from worker.producer import publish_task
 
 @router.post("/ppt/generate")
 async def generate_ppt(payload: GenerateRequest, user: Depends(get_user)):
-    job = await queue.enqueue("ppt_job", user_id=user.id, payload=payload.model_dump())
-    return ApiResponse(code=0, data={"task_id": job.id, "status": "queued"})
+    task_id = await publish_task(
+        routing_key="ppt.generate",
+        user_id=user.id,
+        payload=payload.model_dump(),
+    )
+    return ApiResponse(code=0, data={"task_id": task_id, "status": "queued"})
 ```
 
 **任务状态查询接口：**
@@ -329,7 +347,7 @@ GET /ai/task/{task_id}/status → {"task_id": "...", "status": "running", "progr
 GET /ai/task/{task_id}/result → {"task_id": "...", "status": "complete", "data": {...}}
 ```
 
-任务状态持久化在 Redis（SAQ 内置 `--web` 可提供 Dashboard）。
+任务元数据（状态、进度、结果）存储在 Redis 中，RabbitMQ 仅负责消息投递。
 
 ---
 

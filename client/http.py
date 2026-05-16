@@ -31,23 +31,37 @@ def _load_private_key():
     return _private_key
 
 
-def _sign(method: str, path: str, body: str, timestamp: str, nonce: str) -> str:
-    """使用 RSA-SHA256 生成请求签名。"""
-    sign_string = f"{method}\n{path}\n{body}\n{timestamp}\n{nonce}"
+def _sign(method: str, path: str, body_bytes: bytes, timestamp: str, nonce: str) -> str:
+    """使用 RSA-SHA256 生成请求签名，body_bytes 为原始请求体字节。"""
+    import hashlib as _hashlib
+    sign_bytes = (
+        method.encode("utf-8") + b"\n"
+        + path.encode("utf-8") + b"\n"
+        + body_bytes + b"\n"
+        + timestamp.encode("utf-8") + b"\n"
+        + nonce.encode("utf-8")
+    )
+    from loguru import logger
+    logger.debug(
+        f"[SIGN] method={method} path={path} "
+        f"body_len={len(body_bytes)} body_sha256={_hashlib.sha256(body_bytes).hexdigest()[:16]} "
+        f"sign_str_len={len(sign_bytes)} sign_sha256={_hashlib.sha256(sign_bytes).hexdigest()[:16]} "
+        f"ts={timestamp} nonce={nonce}"
+    )
     private_key = _load_private_key()
     signature = private_key.sign(
-        sign_string.encode("utf-8"),
+        sign_bytes,
         padding.PKCS1v15(),
         hashes.SHA256(),
     )
     return base64.b64encode(signature).decode("utf-8")
 
 
-def _make_headers(method: str, path: str, body: str) -> dict[str, str]:
+def _make_headers(method: str, path: str, body_bytes: bytes) -> dict[str, str]:
     """构造包含签名、时间戳、随机数的请求头。"""
     timestamp = str(int(time.time() * 1000))
     nonce = str(uuid.uuid4())
-    signature = _sign(method, path, body, timestamp, nonce)
+    signature = _sign(method, path, body_bytes, timestamp, nonce)
     return {
         "Content-Type": "application/json",
         "X-Timestamp": timestamp,
@@ -59,7 +73,7 @@ def _make_headers(method: str, path: str, body: str) -> dict[str, str]:
 async def post(path: str, json_body: dict | None = None) -> dict:
     """向 Java 后端发送带签名的 POST 请求，返回 JSON 响应。"""
     body_str = "{}" if json_body is None else _dump_json(json_body)
-    headers = _make_headers("POST", path, body_str)
+    headers = _make_headers("POST", path, body_str.encode("utf-8"))
 
     async with httpx.AsyncClient(
         base_url=settings.java_base_url,
@@ -73,16 +87,18 @@ async def post(path: str, json_body: dict | None = None) -> dict:
 async def upload_file(path: str, file_path: str, fields: dict | None = None) -> dict:
     """以 multipart/form-data 上传文件到 Java 后端。
 
-    通过同步 Client.build_request 先拿到完整 multipart 编码请求体，
-    再对其签名，确保签名与实际发送的报文一致。
+    关键：通过 sync_client.build_request 预编码 multipart body，签名后
+    用 httpx.Request + c.send() 原样发送，绕过 c.post() 看到 multipart
+    Content-Type 后对 body 二次编码的问题。
     """
     fields = fields or {}
     filename = Path(file_path).name
+    from loguru import logger
 
     with open(file_path, "rb") as f:
         file_content = f.read()
 
-    # 1. 用同步 Client 构建请求，获取完整 multipart 请求体与 Content-Type
+    # 1. 预编码 — 拿到完整 multipart body 与精确的 Content-Type（含 boundary）
     with httpx.Client(base_url=settings.java_base_url) as sync_client:
         req = sync_client.build_request(
             "POST", path,
@@ -92,17 +108,19 @@ async def upload_file(path: str, file_path: str, fields: dict | None = None) -> 
         body_bytes = req.read()
         content_type = req.headers.get("content-type", "")
 
-    # 2. 基于完整请求体生成签名
-    body_str = body_bytes.decode("utf-8", errors="replace")
-    headers = _make_headers("POST", path, body_str)
+    logger.debug(
+        f"[UPLOAD] content-type={content_type} "
+        f"body_len={len(body_bytes)} body_head={body_bytes[:80]!r}"
+    )
+
+    # 2. 签名 — 直接使用原始 body_bytes
+    headers = _make_headers("POST", path, body_bytes)
     headers["Content-Type"] = content_type
 
-    # 3. 发送请求
-    async with httpx.AsyncClient(
-        base_url=settings.java_base_url,
-        timeout=60.0,
-    ) as c:
-        resp = await c.post(path, content=body_bytes, headers=headers)
+    # 3. 发送 — 用 httpx.Request + c.send() 避免 c.post() 二次编码 multipart
+    async with httpx.AsyncClient(timeout=60.0) as c:
+        final_req = httpx.Request("POST", req.url, content=body_bytes, headers=headers)
+        resp = await c.send(final_req)
         resp.raise_for_status()
         return resp.json()
 
@@ -112,7 +130,7 @@ async def get(path: str, params: dict | None = None) -> dict:
     params = params or {}
     query_string = _encode_query(params)
     signed_path = f"{path}?{query_string}" if query_string else path
-    headers = _make_headers("GET", signed_path, "")
+    headers = _make_headers("GET", signed_path, b"")
 
     async with httpx.AsyncClient(
         base_url=settings.java_base_url,
@@ -128,7 +146,7 @@ async def download_file(path: str, params: dict | None = None, save_path: str = 
     params = params or {}
     query_string = _encode_query(params)
     signed_path = f"{path}?{query_string}" if query_string else path
-    headers = _make_headers("GET", signed_path, "")
+    headers = _make_headers("GET", signed_path, b"")
 
     async with httpx.AsyncClient(
         base_url=settings.java_base_url,
@@ -148,7 +166,7 @@ async def delete(path: str, params: dict | None = None) -> dict:
     params = params or {}
     query_string = _encode_query(params)
     signed_path = f"{path}?{query_string}" if query_string else path
-    headers = _make_headers("DELETE", signed_path, "")
+    headers = _make_headers("DELETE", signed_path, b"")
 
     async with httpx.AsyncClient(
         base_url=settings.java_base_url,
@@ -165,7 +183,7 @@ async def put(path: str, params: dict | None = None, json_body: dict | None = No
     body_str = _dump_json(json_body) if json_body else "{}"
     query_string = _encode_query(params)
     signed_path = f"{path}?{query_string}" if query_string else path
-    headers = _make_headers("PUT", signed_path, body_str)
+    headers = _make_headers("PUT", signed_path, body_str.encode("utf-8"))
 
     async with httpx.AsyncClient(
         base_url=settings.java_base_url,

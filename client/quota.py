@@ -6,7 +6,7 @@ from config import settings
 PREFIX = f"{settings.java_api_prefix}/internal"
 
 
-async def consume_quota(user_id: int, related_id: int | None = None) -> dict:
+async def consume_quota(user_id: int, related_id: str | None = None) -> dict:
     """文档生成前调用，扣减用户一次额度。"""
     body = {"userId": user_id}
     if related_id is not None:
@@ -14,7 +14,7 @@ async def consume_quota(user_id: int, related_id: int | None = None) -> dict:
     return await post(f"{PREFIX}/quota/consume", body)
 
 
-async def refund_quota(user_id: int, related_id: int | None = None) -> dict:
+async def refund_quota(user_id: int, related_id: str | None = None) -> dict:
     """文档生成失败时调用，退还用户一次额度。"""
     body = {"userId": user_id}
     if related_id is not None:
