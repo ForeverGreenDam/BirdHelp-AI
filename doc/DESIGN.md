@@ -1,6 +1,6 @@
 # BirdHelp AI 模块设计文档
 
-> v3.1 | 2026-05-13
+> v3.2 | 2026-05-16 | Phase 3 PPT 已完成
 
 ---
 
@@ -50,23 +50,23 @@ BirdHelp/
 ├── main.py
 ├── config.py
 │
-├── api/                    # 对外 API（✅ 已实现: router, material）
+├── api/                    # 对外 API（✅ 已实现: router, material, ppt）
 │   ├── router.py           #   │ 待实现: ppt, word, pdf, chat, ocr
 │   ├── material.py         # ✅ POST /ai/material/upload
-│   ├── ppt.py              # ⬜ POST /ai/ppt/generate
+│   ├── ppt.py              # ✅ POST /ai/ppt/generate
 │   ├── word.py             # ⬜ POST /ai/word/generate
 │   ├── pdf.py              # ⬜ POST /ai/pdf/generate
 │   ├── chat.py             # ⬜ POST /ai/chat/modify
 │   └── ocr.py              # ⬜ POST /ai/ocr/recognize
 │
-├── chains/                 # LangChain Chain（⬜ 占位）
-│   ├── ppt_chain.py
+├── chains/                 # LangChain Chain（✅ ppt_chain 已实现）
+│   ├── ppt_chain.py        # ✅ PPT 大纲生成 Chain
 │   ├── word_chain.py
 │   ├── pdf_chain.py
 │   └── chat_chain.py
 │
-├── graph/                  # LangGraph 工作流（⬜ 占位）
-│   ├── generation_graph.py # RAG→生成→检查→重试
+├── graph/                  # LangGraph 工作流（✅ generation_graph 已实现）
+│   ├── generation_graph.py # ✅ PPT 生成状态图 (RAG→Chain→校验→重试→构建)
 │   └── chat_graph.py       # 对话修改状态图
 │
 ├── rag/                    # RAG 管线（✅ 已实现）
@@ -76,12 +76,12 @@ BirdHelp/
 │
 ├── generator/              # Office 文件生成（⬜ 仅骨架 base.py）
 │   ├── base.py             # ✅ 抽象基类
-│   ├── ppt.py              # ⬜ PPT 生成器
+│   ├── ppt.py              # ✅ PPT 生成器（python-pptx，支持 5 种布局 + 3 套风格）
 │   ├── word.py             # ⬜ Word 生成器
 │   └── pdf.py              # ⬜ PDF 生成器
 │
-├── services/               # 业务编排（⬜ 占位）
-│   ├── generation.py
+├── services/               # 业务编排（✅ 已实现: generation）
+│   ├── generation.py      # ✅ PPT 生成业务编排（额度→生成→上传→退款）
 │   ├── chat.py
 │   └── ocr.py              # ⬜ OCR 业务逻辑（含 PDF/PPT/Word 图片 OCR）
 │
@@ -119,7 +119,7 @@ BirdHelp/
 | POST | `/ai/material/upload` | 上传 RAG 参考素材并触发摄取 | ✅ |
 | GET | `/ai/material/list` | 查询素材列表 | ✅ |
 | DELETE | `/ai/material/{id}` | 删除素材（Java 回收站 + Redis 向量清理） | ✅ |
-| POST | `/ai/ppt/generate` | 生成 PPT（支持 RAG） | ⬜ |
+| POST | `/ai/ppt/generate` | 生成 PPT（支持 RAG） | ✅ |
 | POST | `/ai/word/generate` | 生成 Word（支持 RAG） | ⬜ |
 | POST | `/ai/pdf/generate` | 生成 PDF（支持 RAG） | ⬜ |
 | POST | `/ai/chat/modify` | 对话式修改文档 | ⬜ |
@@ -354,7 +354,7 @@ GET /ai/task/{task_id}/result → {"task_id": "...", "status": "complete", "data
 - 素材删除联动（Java 回收站 + Redis 向量清理）
 - RAG 管线文档 (`doc/RAG_PIPELINE.md`)
 
-### Phase 3: 文档生成（第 1–3 周）⚡ 同步模式
+### Phase 3: 文档生成（第 1–3 周）⚡ 同步模式 — PPT ✅ 已完成
 
 **目标：** 用户上传素材后，AI 生成完整 Office 文档。
 
@@ -362,16 +362,18 @@ GET /ai/task/{task_id}/result → {"task_id": "...", "status": "complete", "data
 > 后续 Phase 7 引入消息队列异步化，解耦请求与生成。初期接受同步阻塞，先跑通核心链路。
 
 - LangChain Chain 实现：
-  - `ppt_chain.py` — PPT 大纲 Prompt + LLM + JSON OutputParser
+  - `ppt_chain.py` — ✅ PPT 大纲 Prompt + LLM + JSON OutputParser
   - `word_chain.py` — Word 内容 Prompt + LLM + JSON OutputParser
   - `pdf_chain.py` — PDF 内容 Prompt + LLM + JSON OutputParser
 - Office 文件生成器：
-  - `generator/ppt.py` — 基于 python-pptx 的 PPT 生成（排版、配色、图表位置）
+  - `generator/ppt.py` — ✅ 基于 python-pptx 的 PPT 生成（5 种布局、3 套风格配色）
   - `generator/word.py` — 基于 python-docx 的 Word 生成（标题层级、段落样式、表格）
   - `generator/pdf.py` — python-docx → LibreOffice 无头转换
 - LangGraph 生成状态图：
-  - `graph/generation_graph.py` — RAG 检索 → Chain 执行 → JSON 校验 → 失败重试（≤3 次）
-- 生成接口：`POST /ai/ppt/generate` / `/ai/word/generate` / `/ai/pdf/generate`
+  - `graph/generation_graph.py` — ✅ RAG 检索 → Chain 执行 → JSON 校验 → 失败重试（≤3 次）
+- 业务编排：
+  - `services/generation.py` — ✅ 额度扣减 → LangGraph 执行 → 文件上传 → 失败退款
+- 生成接口：`POST /ai/ppt/generate` ✅ / `/ai/word/generate` / `/ai/pdf/generate`
 - 生成完成后上传文件至 Java 后端
 
 ### Phase 4: 对话修改（第 4–5 周）

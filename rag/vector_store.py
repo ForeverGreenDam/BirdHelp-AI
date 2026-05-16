@@ -78,7 +78,7 @@ def delete_by_material(user_id: str, project_id: str, material_id: int) -> int:
     index_name = _index_name(user_id, project_id)
     try:
         results = r.ft(index_name).search(
-            Query(f"@material_id:{{{material_id}}}")
+            Query("@material_id:{%s}" % material_id)
         )
     except Exception:
         return 0
