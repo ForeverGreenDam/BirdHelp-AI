@@ -1,0 +1,25 @@
+# ============================================================
+# BirdHelp AI 模块 — Docker Compose 编排
+# 用法: docker compose up -d
+# ============================================================
+services:
+  birdhelp:
+    build: .
+    image: birdhelp-ai:latest
+    container_name: birdhelp-ai
+    restart: unless-stopped
+    ports:
+      - "8686:8686"
+    env_file:
+      - .env
+    volumes:
+      - /usr/birdhelp/ai:/tmp/birdhelp
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8686/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  birdhelp-tmp:

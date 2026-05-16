@@ -1,0 +1,34 @@
+# 环境配置（通过 volume 挂载）
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+
+# 测试输出
+test_output/
+
+# Git
+.git/
+.gitignore
+
+# 文档
+doc/
+
+# 部署脚本（不需要在镜像内）
+deploy/
+
+# 临时文件
+/tmp/
+
+# Docker 自身
+Dockerfile
+docker-compose.yml
+.dockerignore
