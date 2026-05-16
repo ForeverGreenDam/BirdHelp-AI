@@ -8,11 +8,14 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
+from starlette.types import ASGIApp, Scope, Receive, Send, Message
 
 from api.router import api_router
 from config import settings
 from core.exceptions import BirdHelpError
 from utils.file import ensure_temp_dir
+
+CHUNK_SIZE = 65536  # ASGI 回放分块大小
 
 
 @asynccontextmanager
@@ -24,11 +27,62 @@ async def lifespan(app: FastAPI):
     logger.info(f"{settings.app_name} shutting down")
 
 
+class BodyCacheMiddleware:
+    """原始 ASGI 中间件：缓存请求体到 scope，再分块回放给下游。
+
+    原因：FastAPI 对 multipart 请求会先调用 request.form() 消费 stream，
+    导致 router 级 Depends (require_java_caller) 中的 request.body() 失败。
+    本中间件在进入 FastAPI 前把 body 完整收集、存入 scope 供验签使用，
+    然后分块回放，python_multipart 能正常解析。
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        if scope["method"] not in ("POST", "PUT", "PATCH", "DELETE"):
+            await self.app(scope, receive, send)
+            return
+
+        # 收集全部请求体
+        body_chunks: list[bytes] = []
+        more_body = True
+        while more_body:
+            message = await receive()
+            if message["type"] == "http.request":
+                body_chunks.append(message.get("body", b""))
+                more_body = message.get("more_body", False)
+
+        cached_body = b"".join(body_chunks)
+        scope["_cached_body"] = cached_body
+
+        # 分块回放，模拟真实 ASGI 数据流
+        body_sent = 0
+
+        async def replay_receive() -> Message:
+            nonlocal body_sent
+            if body_sent >= len(cached_body):
+                return {"type": "http.request", "body": b"", "more_body": False}
+            start = body_sent
+            end = min(start + CHUNK_SIZE, len(cached_body))
+            body_sent = end
+            more = end < len(cached_body)
+            return {"type": "http.request", "body": cached_body[start:end], "more_body": more}
+
+        await self.app(scope, replay_receive, send)
+
+
 app = FastAPI(
     title=settings.app_name,
     debug=settings.debug,
     lifespan=lifespan,
 )
+
+app.add_middleware(BodyCacheMiddleware)
+
 
 app.include_router(api_router)
 

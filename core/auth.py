@@ -34,14 +34,30 @@ def _load_public_key():
 
 
 def _verify_signature(method: str, path: str, body: str,
-                      timestamp: str, nonce: str, signature_b64: str) -> bool:
-    """验证 RSA-SHA256 签名。"""
-    sign_string = f"{method}\n{path}\n{body}\n{timestamp}\n{nonce}"
+                      timestamp: str, nonce: str, signature_b64: str,
+                      raw_body: bytes | None = None) -> bool:
+    """验证 RSA-SHA256 签名。
+
+    优先使用 raw_body 构造签名字节串，避免 binary 内容
+    (如 multipart 中的 PDF) 经 UTF-8 编解码往返后与 Java 端不一致。
+    raw_body 为 None 时回退到 body 字符串路径。
+    """
+    if raw_body is not None:
+        sign_bytes = (
+            method.encode() + b"\n" +
+            path.encode() + b"\n" +
+            raw_body + b"\n" +
+            timestamp.encode() + b"\n" +
+            nonce.encode()
+        )
+    else:
+        sign_string = f"{method}\n{path}\n{body}\n{timestamp}\n{nonce}"
+        sign_bytes = sign_string.encode("utf-8")
     try:
         signature = base64.b64decode(signature_b64)
         _load_public_key().verify(
             signature,
-            sign_string.encode("utf-8"),
+            sign_bytes,
             padding.PKCS1v15(),
             hashes.SHA256(),
         )
@@ -84,8 +100,14 @@ async def require_java_caller(request: Request):
             detail={"code": 401, "message": "请求已过期或时间偏差过大", "data": None},
         )
 
-    # 3. 读取请求体（FastAPI/Starlette 自动缓存到 _body，下游可重复读取）
-    body_bytes = await request.body()
+    # 3. 读取请求体
+    #    正常情况 require_java_caller (router Depends) 先于 Form/File
+    #    解析执行，request.body() 是 stream 的第一个消费者。
+    #    若因版本差异或 uvloop 导致 stream 已被消费，回退至 scope 缓存。
+    try:
+        body_bytes = await request.body()
+    except RuntimeError:
+        body_bytes = request.scope.get("_cached_body", b"")
     body_str = body_bytes.decode("utf-8", errors="replace")
 
     # 4. 构造签名路径（含 query string）
@@ -93,8 +115,9 @@ async def require_java_caller(request: Request):
     if request.url.query:
         path = f"{path}?{request.url.query}"
 
-    # 5. 验签
-    if not _verify_signature(request.method, path, body_str, timestamp, nonce, signature_b64):
+    # 5. 验签 — 优先用原始字节避免 binary 编解码差异
+    if not _verify_signature(request.method, path, body_str, timestamp, nonce, signature_b64,
+                             raw_body=body_bytes):
         raise HTTPException(
             status_code=401,
             detail={"code": 401, "message": "签名不匹配", "data": None},

@@ -18,9 +18,9 @@ router = APIRouter(prefix="/ai/material", tags=["material"])
 
 @router.post("/upload")
 async def upload_material(
-    user_id: int = Form(..., description="用户 ID"),
-    project_id: str = Form(..., description="项目 ID，用于隔离知识库"),
-    java_file_id: int = Form(..., description="Java 后端已上传的文件 ID"),
+    user_id: int = Form(..., alias="userId"),
+    project_id: str = Form(..., alias="projectId"),
+    java_file_id: int = Form(..., alias="javaFileId"),
     file: UploadFile = File(...),
 ):
     """上传参考素材并触发 RAG 摄取。
@@ -61,8 +61,8 @@ async def upload_material(
 @router.delete("/{material_id}")
 async def delete_material(
     material_id: int,
-    user_id: int = Query(..., description="用户 ID"),
-    project_id: str = Query(..., description="项目 ID，用于定位对应知识库"),
+    user_id: int = Query(..., alias="userId", description="用户 ID"),
+    project_id: str = Query(..., alias="projectId", description="项目 ID，用于定位对应知识库"),
 ):
     """删除素材：Redis 向量清理。"""
 
@@ -76,9 +76,9 @@ async def delete_material(
 @router.post("/{material_id}/reindex")
 async def reindex_material(
     material_id: int,
-    user_id: int = Query(..., description="用户 ID"),
-    project_id: str = Query(..., description="项目 ID，用于定位对应知识库"),
-    file_name: str = Query(..., description="原始文件名（含扩展名），用于选 Loader"),
+    user_id: int = Query(..., alias="userId", description="用户 ID"),
+    project_id: str = Query(..., alias="projectId", description="项目 ID，用于定位对应知识库"),
+    file_name: str = Query(..., alias="fileName", description="原始文件名（含扩展名），用于选 Loader"),
 ):
     """回收站恢复后重建向量索引。
 
@@ -99,8 +99,8 @@ async def reindex_material(
 @router.post("/{material_id}/vector-purge")
 async def purge_material_vectors(
     material_id: int,
-    user_id: int = Query(..., description="用户 ID"),
-    project_id: str = Query(..., description="项目 ID，用于定位对应知识库"),
+    user_id: int = Query(..., alias="userId", description="用户 ID"),
+    project_id: str = Query(..., alias="projectId", description="项目 ID，用于定位对应知识库"),
 ):
     """强制删除后清理 Redis 中的残留向量。
 

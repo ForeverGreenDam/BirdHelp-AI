@@ -6,13 +6,16 @@ FROM python:3.12-slim
 LABEL app="BirdHelp-AI"
 LABEL description="大学生文档助手 AI 能力层"
 
-# 安装系统依赖（python-pptx 需要 libxml2）
-# 安装系统依赖（使用国内清华源，超快）
+# 安装系统依赖:
+#   libxml2          — python-pptx 解析依赖
+#   libreoffice-writer — PDF 生成: .docx → .pdf 无头转换
+# 使用国内清华源加速
 RUN sed -i "s@deb.debian.org@mirrors.tuna.tsinghua.edu.cn@g" /etc/apt/sources.list.d/debian.sources \
     && apt-get update -qq \
     && apt-get install -y -qq --no-install-recommends \
         curl \
         libxml2 \
+        libreoffice-writer \
     && rm -rf /var/lib/apt/lists/*
 
 # 创建非 root 运行用户
@@ -44,5 +47,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -sf http://localhost:8686/ || exit 1
 
 EXPOSE 8686
+ENV PYTHONUNBUFFERED=1
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8686", "--workers", "1"]
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8686", "--workers", "1" , "--log-level", "debug"]

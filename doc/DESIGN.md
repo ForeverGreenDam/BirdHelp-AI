@@ -54,15 +54,15 @@ BirdHelp/
 │   ├── router.py           #   │ 待实现: ppt, word, pdf, chat, ocr
 │   ├── material.py         # ✅ POST /ai/material/upload
 │   ├── ppt.py              # ✅ POST /ai/ppt/generate
-│   ├── word.py             # ⬜ POST /ai/word/generate
-│   ├── pdf.py              # ⬜ POST /ai/pdf/generate
+│   ├── word.py             # ✅ POST /ai/word/generate
+│   ├── pdf.py              # ✅ POST /ai/pdf/generate
 │   ├── chat.py             # ⬜ POST /ai/chat/modify
 │   └── ocr.py              # ⬜ POST /ai/ocr/recognize
 │
 ├── chains/                 # LangChain Chain（✅ ppt_chain 已实现）
 │   ├── ppt_chain.py        # ✅ PPT 大纲生成 Chain
-│   ├── word_chain.py
-│   ├── pdf_chain.py
+│   ├── word_chain.py       # ✅ Word 内容生成 Chain
+│   ├── pdf_chain.py        # ✅ PDF 内容生成 Chain
 │   └── chat_chain.py
 │
 ├── graph/                  # LangGraph 工作流（✅ generation_graph 已实现）
@@ -77,8 +77,8 @@ BirdHelp/
 ├── generator/              # Office 文件生成（⬜ 仅骨架 base.py）
 │   ├── base.py             # ✅ 抽象基类
 │   ├── ppt.py              # ✅ PPT 生成器（python-pptx，支持 5 种布局 + 3 套风格）
-│   ├── word.py             # ⬜ Word 生成器
-│   └── pdf.py              # ⬜ PDF 生成器
+│   ├── word.py             # ✅ Word 生成器（python-docx）
+│   └── pdf.py              # ✅ PDF 生成器（python-docx → LibreOffice）
 │
 ├── services/               # 业务编排（✅ 已实现: generation）
 │   ├── generation.py      # ✅ PPT 生成业务编排（额度→生成→上传→退款）
@@ -120,8 +120,8 @@ BirdHelp/
 | GET | `/ai/material/list` | 查询素材列表 | ✅ |
 | DELETE | `/ai/material/{id}` | 删除素材（Java 回收站 + Redis 向量清理） | ✅ |
 | POST | `/ai/ppt/generate` | 生成 PPT（支持 RAG） | ✅ |
-| POST | `/ai/word/generate` | 生成 Word（支持 RAG） | ⬜ |
-| POST | `/ai/pdf/generate` | 生成 PDF（支持 RAG） | ⬜ |
+| POST | `/ai/word/generate` | 生成 Word（支持 RAG） | ✅ |
+| POST | `/ai/pdf/generate` | 生成 PDF（支持 RAG） | ✅ |
 | POST | `/ai/chat/modify` | 对话式修改文档 | ⬜ |
 | POST | `/ai/ocr/recognize` | 独立 OCR 识别接口 | ⬜ |
 | GET | `/ai/task/{task_id}/status` | 查询异步任务状态 | ⬜ |

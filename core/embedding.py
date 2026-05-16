@@ -15,4 +15,5 @@ def create_embeddings() -> OpenAIEmbeddings:
         api_key=settings.effective_embedding_api_key,
         base_url=settings.effective_embedding_base_url,
         dimensions=settings.embedding_dimension,
+        check_embedding_ctx_length=False,
     )

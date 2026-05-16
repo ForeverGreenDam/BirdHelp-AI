@@ -47,13 +47,18 @@ _INDEX_SCHEMA = {
     "tag": [{"name": "material_id"}, {"name": "project_id"}],
 }
 
+def _redis_url() -> str:
+    """根据配置构建 Redis 连接 URL。"""
+    if settings.redis_password:
+        return f"redis://:{settings.redis_password}@{settings.redis_host}:{settings.redis_port}"
+    return f"redis://{settings.redis_host}:{settings.redis_port}"
 
 def get_vectorstore(user_id: str, project_id: str):
     """获取用户+项目专属的 Redis 向量存储实例。"""
     from langchain_community.vectorstores.redis import Redis
 
     return Redis(
-        redis_client=_get_redis(),
+        redis_url=_redis_url(),
         index_name=_index_name(user_id, project_id),
         embedding=create_embeddings(),
         index_schema=_INDEX_SCHEMA,
