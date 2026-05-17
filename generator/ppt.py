@@ -18,8 +18,8 @@ STYLE_THEMES = {
         "body_color": RGBColor(0x2D, 0x2D, 0x2D),
         "accent_color": RGBColor(0x1A, 0x3C, 0x6E),
         "bg_light": RGBColor(0xF0, 0xF2, 0xF5),
-        "title_font": "SimHei",
-        "body_font": "SimSun",
+        "title_font": "WenQuanYi Micro Hei",
+        "body_font": "AR PL UMing CN",
     },
     "business": {
         "title_color": RGBColor(0x1B, 0x3A, 0x5C),
@@ -27,8 +27,8 @@ STYLE_THEMES = {
         "body_color": RGBColor(0x33, 0x33, 0x33),
         "accent_color": RGBColor(0x00, 0x6E, 0xB6),
         "bg_light": RGBColor(0xE8, 0xEC, 0xF0),
-        "title_font": "Microsoft YaHei",
-        "body_font": "Microsoft YaHei",
+        "title_font": "WenQuanYi Micro Hei",
+        "body_font": "WenQuanYi Micro Hei",
     },
     "creative": {
         "title_color": RGBColor(0xE0, 0x4A, 0x36),
@@ -36,8 +36,8 @@ STYLE_THEMES = {
         "body_color": RGBColor(0x3C, 0x3C, 0x3C),
         "accent_color": RGBColor(0xE0, 0x4A, 0x36),
         "bg_light": RGBColor(0xFE, 0xF6, 0xF0),
-        "title_font": "Microsoft YaHei",
-        "body_font": "Microsoft YaHei",
+        "title_font": "WenQuanYi Micro Hei",
+        "body_font": "WenQuanYi Micro Hei",
     },
 }
 

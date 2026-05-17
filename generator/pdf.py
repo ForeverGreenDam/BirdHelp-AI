@@ -10,6 +10,7 @@ from docx.shared import Inches, Pt, RGBColor, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from loguru import logger
 
+from core.exceptions import FileGenerationError
 from generator.base import BaseGenerator
 from utils.file import temp_file_path, ensure_temp_dir
 
@@ -18,25 +19,25 @@ STYLE_THEMES = {
         "title_color": RGBColor(0x1A, 0x3C, 0x6E),
         "body_color": RGBColor(0x2D, 0x2D, 0x2D),
         "accent_color": RGBColor(0x1A, 0x3C, 0x6E),
-        "title_font": "SimHei",
-        "body_font": "SimSun",
-        "heading_font": "SimHei",
+        "title_font": "WenQuanYi Micro Hei",
+        "body_font": "AR PL UMing CN",
+        "heading_font": "WenQuanYi Micro Hei",
     },
     "business": {
         "title_color": RGBColor(0x1B, 0x3A, 0x5C),
         "body_color": RGBColor(0x33, 0x33, 0x33),
         "accent_color": RGBColor(0x00, 0x6E, 0xB6),
-        "title_font": "Microsoft YaHei",
-        "body_font": "Microsoft YaHei",
-        "heading_font": "Microsoft YaHei",
+        "title_font": "WenQuanYi Micro Hei",
+        "body_font": "WenQuanYi Micro Hei",
+        "heading_font": "WenQuanYi Micro Hei",
     },
     "creative": {
         "title_color": RGBColor(0xE0, 0x4A, 0x36),
         "body_color": RGBColor(0x3C, 0x3C, 0x3C),
         "accent_color": RGBColor(0xE0, 0x4A, 0x36),
-        "title_font": "Microsoft YaHei",
-        "body_font": "Microsoft YaHei",
-        "heading_font": "Microsoft YaHei",
+        "title_font": "WenQuanYi Micro Hei",
+        "body_font": "WenQuanYi Micro Hei",
+        "heading_font": "WenQuanYi Micro Hei",
     },
 }
 
@@ -138,10 +139,11 @@ class PdfGenerator(BaseGenerator):
                 docx_path.unlink()
             return output_path
         else:
-            logger.warning("LibreOffice not available, falling back to .docx output")
-            fallback_path = output_path.with_suffix(".docx")
-            shutil.move(str(docx_path), str(fallback_path))
-            return fallback_path
+            if docx_path.exists():
+                docx_path.unlink()
+            raise FileGenerationError(
+                "LibreOffice 转换 PDF 失败，请检查服务端 LibreOffice 是否正常安装"
+            )
 
     def _add_heading(self, doc: Document, text: str, level: int, theme: dict) -> None:
         """添加格式化标题。"""

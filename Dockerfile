@@ -7,8 +7,10 @@ LABEL app="BirdHelp-AI"
 LABEL description="大学生文档助手 AI 能力层"
 
 # 安装系统依赖:
-#   libxml2          — python-pptx 解析依赖
-#   libreoffice-writer — PDF 生成: .docx → .pdf 无头转换
+#   libxml2              — python-pptx 解析依赖
+#   libreoffice-writer   — PDF 生成: .docx → .pdf 无头转换
+#   fonts-wqy-microhei   — 文泉驿微米黑 (sans-serif, 替代 SimHei / 微软雅黑)
+#   fonts-arphic-uming   — AR PL 明体 (serif, 替代 SimSun 宋体)
 # 使用国内清华源加速
 RUN sed -i "s@deb.debian.org@mirrors.tuna.tsinghua.edu.cn@g" /etc/apt/sources.list.d/debian.sources \
     && apt-get update -qq \
@@ -16,6 +18,8 @@ RUN sed -i "s@deb.debian.org@mirrors.tuna.tsinghua.edu.cn@g" /etc/apt/sources.li
         curl \
         libxml2 \
         libreoffice-writer \
+        fonts-wqy-microhei \
+        fonts-arphic-uming \
     && rm -rf /var/lib/apt/lists/*
 
 # 创建非 root 运行用户
@@ -38,6 +42,9 @@ COPY --chown=birdhelp:birdhelp . .
 
 # 临时文件目录
 RUN mkdir -p /tmp/birdhelp && chown birdhelp:birdhelp /tmp/birdhelp
+
+# LibreOffice 需要 HOME 目录写入缓存与配置（~/.cache/dconf 等）
+ENV HOME=/tmp/birdhelp
 
 # 切换到非 root 用户
 USER birdhelp
