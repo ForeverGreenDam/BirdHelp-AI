@@ -55,14 +55,18 @@ class PptGenerateRequest(GenerateRequest):
 
 
 class WordGenerateRequest(GenerateRequest):
-    """Word 生成请求，扩展文档类型与字数。"""
+    """Word 生成请求，扩展文档类型、字数、图片选项。"""
     doc_type: str = Field(default="essay", description="essay / report / letter / paper")
     word_count: int = Field(default=2000, ge=500, le=10000)
+    style: str = Field(default="academic", description="academic / business / creative / minimal / tech / warm")
+    enable_images: bool = Field(default=True, description="是否自动搜索配图")
 
 
 class PdfGenerateRequest(GenerateRequest):
-    """PDF 生成请求，扩展文档类型。"""
+    """PDF 生成请求，扩展文档类型、图片选项。"""
     doc_type: str = Field(default="report", description="report / resume / form")
+    style: str = Field(default="academic", description="academic / business / creative / minimal / tech / warm")
+    enable_images: bool = Field(default=True, description="是否自动搜索配图")
 
 
 # ── 文档生成响应 ──

@@ -1,17 +1,14 @@
 # PDF 文档生成设计
 
-> v1.1 | 2026-05-22 | Phase 3 PDF 生成
-
-> **与 PPT 的关系**: PDF 与 PPT 共享同一套 LangGraph 状态图架构 (`graph/generation_graph.py`)，通过 `state["doc_type"]` 字段分发。
-> PPT 拥有设计系统 + 布局渲染器 + 图片集成 + QA 能力，PDF 目前使用基础同步模式。两者共享同一套 LangGraph 架构，未来可为 PDF 扩展类似的增强管道。
+> v2.0 | 2026-05-22 | Phase 3 增强版（图表嵌入 + 图片 + QA）
 
 ---
 
 ## 一、概述
 
-PDF 生成采用两步策略：LLM 生成结构化内容 → python-docx 构建 .docx → LibreOffice 无头转换为 .pdf。相比直接操作 PDF 库，此方案保证了排版一致性和中文字体支持。
+PDF 生成采用与 Word 完全相同的 DocxBuilder 渲染逻辑，额外增加 LibreOffice 无头转换步骤。
 
-复用 PPT/Word 的 LangGraph 状态图架构，通过 `doc_type` 字段分发。
+与 PPT/Word 共享 LangGraph 状态图架构和公共 ColorPalette 设计系统。
 
 ---
 
@@ -23,9 +20,12 @@ POST /ai/pdf/generate
   → LangGraph 状态图:
       ├─ retrieve_context（RAG 检索，可选）
       ├─ generate_outline（PdfChain → LLM → JSON 解析）
-      ├─ validate_outline（校验 title + sections）
-      ├─ build_document（PdfGenerator）:
-      │     ├─ python-docx 构建 .docx 临时文件
+      ├─ validate_outline（校验 title + sections ≥ 1）
+      ├─ render_charts（matplotlib 渲染图表为 PNG）
+      ├─ fetch_images（Unsplash → Pexels → 占位图）
+      ├─ run_qa（DocQAChain 评分 + 修复循环）
+      ├─ build_document:
+      │     ├─ DocxBuilder 构建 .docx
       │     └─ LibreOffice --headless 转换 → .pdf
       └─ handle_error（失败重试 ≤3 次）
   → file.upload（上传 Java 后端）
@@ -36,66 +36,59 @@ POST /ai/pdf/generate
 
 ## 三、Chain 设计 (`chains/pdf_chain.py`)
 
-**PdfChain** — Prompt 模板 + LLM 调用 + JSON 结构化输出。
+**PdfChain** — 增强 Prompt，与 Word 共享相同的 chart/image/table 描述结构。
 
 **支持的文档类型：**
 
 | doc_type | 说明 | 结构特点 |
 |----------|------|----------|
-| `report` | 报告 | title + abstract 章节 + 多个 content 章节 |
+| `report` | 报告 | title + sections（含 charts/images/tables） |
 | `resume` | 简历 | 个人信息 + 教育经历 + 工作经历 + 技能 |
-| `form` | 表单 | title + 描述 + 表格数据 |
+| `form` | 表单 | title + 表格为核心 |
 
-**LLM 输出 JSON 结构：**
+**LLM 输出 JSON 额外支持 page_layout 配置：**
 
 ```json
 {
-  "title": "文档标题",
-  "subtitle": "副标题（可选）",
-  "author": "作者（可选）",
-  "date": "日期（可选）",
-  "sections": [
-    {"heading": "章节标题", "content": ["段落1", "段落2"]}
-  ],
-  "tables": [
-    {"caption": "表格标题", "headers": ["列1", "列2"], "rows": [["值1", "值2"]]}
-  ]
+  "page_layout": {
+    "columns": 1,
+    "header_text": "公司名称 — 年度报告",
+    "footer_text": "第 {page} 页",
+    "show_page_number": true
+  }
 }
 ```
 
+图表、图片、表格的描述结构详见 `WORD_GENERATION.md` 第三章。
+
 ---
 
-## 四、生成器设计 (`generator/pdf/generator.py`)
+## 四、生成器设计
 
-**PdfGenerator** — 两步生成策略。
+### 4.1 公共 DocxBuilder (`generator/_docx_builder.py`)
 
-### 步骤 1：python-docx 构建 .docx
+Word 和 PDF 共用的文档构建器，详细功能见 `WORD_GENERATION.md` 第四章。
 
-**页面设置：** A4 (21cm × 29.7cm)，1 英寸边距。
+### 4.2 PdfGenerator (`generator/pdf/generator.py`)
 
-**构建顺序：**
-1. 标题（居中，26pt，粗体）
-2. 副标题 + 作者 + 日期（居中）
-3. 分隔线
-4. 章节内容（Heading 1 标题 + 段落文本）
-5. 表格（可选，含标题 + 表头 + 数据行，Table Grid 样式）
-
-### 步骤 2：LibreOffice 转换
+两步生成策略：
+1. **DocxBuilder 构建 .docx**（与 Word 完全相同）
+2. **LibreOffice 无头转换 .docx → .pdf**
 
 ```bash
 libreoffice --headless --convert-to pdf --outdir <dir> <file.docx>
 ```
 
 - 超时：120 秒
-- 失败回退：若 LibreOffice 不可用，返回 .docx 文件并记录警告日志
+- 失败回退：LibreOffice 不可用时抛出 `FileGenerationError`
 
-### 风格主题
+### 4.3 图表引擎 (`generator/_chart_engine.py`)
 
-| 风格 | 标题字体 | 正文字体 | 主色 |
-|------|----------|----------|------|
-| academic | SimHei | SimSun | #1A3C6E |
-| business | Microsoft YaHei | Microsoft YaHei | #1B3A5C |
-| creative | Microsoft YaHei | Microsoft YaHei | #E04A36 |
+与 Word 共用同一引擎。5 种图表类型（bar/line/pie/horizontal_bar/radar）渲染为 150 DPI PNG，嵌入到 docx 后随 LibreOffice 转换保留。
+
+### 4.4 公共设计模块 (`generator/_design.py`)
+
+6 套 ColorPalette，详情见 `WORD_GENERATION.md` 第四章。
 
 ---
 
@@ -103,9 +96,11 @@ libreoffice --headless --convert-to pdf --outdir <dir> <file.docx>
 
 `graph/generation_graph.py` 通过 `state["doc_type"] == "pdf"` 分发：
 
-- `_generate_outline`: 创建 `PdfChain`，传入 `doc_type`、`language` 等参数
-- `_validate_outline`: 校验 `title` 非空 + `sections` 至少 1 个
-- `_build_document`: 创建 `PdfGenerator`，输出 `.pdf`（或回退 `.docx`）
+```
+PDF 路径: validate → render_charts → fetch_images → run_qa → build
+```
+
+QA 评分复用 `chains/word_qa_chain.py` 的 DocQAChain。
 
 ---
 
@@ -115,11 +110,13 @@ libreoffice --headless --convert-to pdf --outdir <dir> <file.docx>
 |------|------|------|
 | POST | `/ai/pdf/generate` | 同步生成 PDF 文档 |
 
-请求体 (`PdfGenerateRequest`) 继承 `GenerateRequest`，扩展字段：
+请求体 (`PdfGenerateRequest`)：
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
 | doc_type | str | 否 | report | report / resume / form |
+| style | str | 否 | academic | academic / business / creative / minimal / tech / warm |
+| enable_images | bool | 否 | true | 是否自动搜索配图 |
 
 ---
 
@@ -135,4 +132,6 @@ apt-get install libreoffice-writer
 RUN apt-get update && apt-get install -y libreoffice-writer
 ```
 
-若未安装，生成器会自动回退为 .docx 文件输出。
+matplotlib 图表生成可选依赖（不安装也能生成纯文本文档）。
+
+若 LibreOffice 未安装，PdfGenerator 会抛出 `FileGenerationError`。

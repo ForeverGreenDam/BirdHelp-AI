@@ -28,7 +28,7 @@ pip install -r requirements.txt
 - `chains/` — LangChain Chain 定义（ppt_chain / word_chain / pdf_chain / chat_chain），封装 Prompt + LLM + OutputParser
 - `graph/` — LangGraph 状态图（generation_graph: RAG→生成→检查→重试；chat_graph: 对话修改）
 - `rag/` — RAG 管线（ingestion → retrieval → vector_store）
-- `generator/` — Office 文件生成（python-pptx / python-docx / LibreOffice PDF）
+- `generator/` — Office 文件生成：PPT（python-pptx + 设计系统）、Word/PDF（python-docx + DocxBuilder + matplotlib 图表 + LibreOffice）
 - `client/` — 调用 Java 后端内部接口（quota / file）
 - `core/` — 基础设施（ChatModel 工厂、Embedding 工厂、Schemas、异常）
 
@@ -72,6 +72,7 @@ pip install -r requirements.txt
 - **langchain-openai** (ChatOpenAI 兼容协议，对接 DeepSeek/通义千问/GPT-4o)
 - **Redis Stack** 向量数据库
 - **python-pptx** / **python-docx** / **LibreOffice** (文件生成)
+- **matplotlib** (图表渲染，Word/PDF 嵌入)
 - **PaddleOCR** (OCR)
 - **httpx** (async HTTP 客户端)
 - **pydantic-settings** / **loguru** (配置 / 日志)

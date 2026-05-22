@@ -1,6 +1,6 @@
 # BirdHelp AI 模块设计文档
 
-> v4.0 | 2026-05-22 | Phase 3 完成: PPT 设计系统 + 布局渲染器 + 图片集成 + QA
+> v4.1 | 2026-05-22 | Phase 3 全部完成: PPT/Word/PDF 增强 (设计系统 + 图表引擎 + 图片 + QA)
 
 ---
 
@@ -27,9 +27,9 @@ Java 后端（已建成）              Python AI 模块（本项目）
 | 大模型接入 | langchain-openai (ChatOpenAI) | OpenAI 兼容协议，同时对接 DeepSeek / 通义千问 / GPT-4o |
 | 嵌入模型 | text-embedding-3-small 或通义 text-embedding-v4 | 中文语义效果稳定，1536 维性价比高 |
 | 向量数据库 | Redis Stack | 低延迟向量检索 + 用户索引隔离 + 已有机房 Redis 实例 |
-| PPT 生成 | python-pptx + 设计系统 | 轻量纯 Python；6套主题 + 7种布局渲染器 + 图片集成 + QA |
-| Word 生成 | python-docx | 同上 |
-| PDF 生成 | python-docx → LibreOffice 无头转换 | 先建 docx 再转 PDF，保证排版一致性 |
+| PPT 生成 | python-pptx + 设计系统 | 6套主题 + 7种布局渲染器 + 图片集成 + QA |
+| Word 生成 | python-docx + DocxBuilder + matplotlib | 图表嵌入(PNG)、图片插入、增强表格、封面设计 |
+| PDF 生成 | python-docx → LibreOffice | 与 Word 共享 DocxBuilder，matplotlib 图表嵌入 |
 | 文档解析 | LangChain Loaders (PyPDF / python-docx / python-pptx) | 生态统一，TextSplitter 无缝衔接 |
 | PDF OCR 兜底 | PyMuPDF (fitz) + PaddleOCR | PDF 页→图片渲染→OCR，解决扫描版/图片型 PDF |
 | PPT/Word 图片 OCR | python-pptx/docx 图片提取 + PaddleOCR | 导出嵌入图片 blb → OCR 识别 |
@@ -59,11 +59,12 @@ BirdHelp/
 │   ├── chat.py             # ⬜ POST /ai/chat/modify
 │   └── ocr.py              # ⬜ POST /ai/ocr/recognize
 │
-├── chains/                 # LangChain Chain（✅ ppt / word / pdf 已实现）
+├── chains/                 # LangChain Chain（✅ 全部实现）
 │   ├── ppt_chain.py        # ✅ PptChain（视觉描述生成）
 │   ├── qa_chain.py         # ✅ PPT QA 评分 + 修复循环
-│   ├── word_chain.py       # ✅ Word 内容生成 Chain
-│   ├── pdf_chain.py        # ✅ PDF 内容生成 Chain
+│   ├── word_chain.py       # ✅ WordChain（图表+插图+表格增强 Prompt）
+│   ├── word_qa_chain.py    # ✅ Word/PDF 文档 QA + 修复循环
+│   ├── pdf_chain.py        # ✅ PdfChain（图表+插图+表格增强 Prompt）
 │   └── chat_chain.py       # ⬜ 对话修改 Chain
 │
 ├── graph/                  # LangGraph 工作流（✅ generation_graph 已实现）
@@ -77,17 +78,20 @@ BirdHelp/
 │
 ├── generator/              # Office 文件生成
 │   ├── base.py             # ✅ 抽象基类
-│   ├── ppt/                # ✅ PPT 生成模块（设计系统 + 布局渲染器 + 图片 + QA）
+│   ├── _design.py          # ✅ 公共 ColorPalette（PPT/Word/PDF 共用）
+│   ├── _chart_engine.py    # ✅ matplotlib 图表渲染（bar/line/pie/hbar/radar）
+│   ├── _docx_builder.py    # ✅ 公共 DocxBuilder（Word/PDF 共用）
+│   ├── ppt/                # ✅ PPT 生成模块
 │   │   ├── generator.py        # ✅ PptGenerator
-│   │   ├── theme.py            # ✅ 6 套 ColorTheme
+│   │   ├── theme.py            # ✅ PPT ColorTheme（从 _design 派生）
 │   │   ├── shapes.py           # ✅ 声明式绘图工具包
 │   │   ├── layout.py           # ✅ 11 种 LayoutType + DesignDNA
 │   │   ├── image_provider.py   # ✅ 图片搜索/下载/降级
 │   │   └── layouts/            # ✅ 布局渲染器 (7 种)
-│   ├── word/               # ✅ Word 生成模块（python-docx）
-│   │   └── generator.py        # ✅ WordGenerator
-│   └── pdf/                # ✅ PDF 生成模块（python-docx → LibreOffice）
-│       └── generator.py        # ✅ PdfGenerator
+│   ├── word/               # ✅ Word 生成模块
+│   │   └── generator.py        # ✅ WordGenerator（DocxBuilder + 图片注入）
+│   └── pdf/                # ✅ PDF 生成模块
+│       └── generator.py        # ✅ PdfGenerator（DocxBuilder + LibreOffice）
 │
 ├── services/               # 业务编排（✅ 已实现: generation）
 │   ├── generation.py      # ✅ 文档生成业务编排（额度→生成→上传→退款，支持 PPT/Word/PDF）
@@ -389,13 +393,19 @@ GET /ai/task/{task_id}/result → {"task_id": "...", "status": "complete", "data
 > 后续 Phase 7 引入消息队列异步化，解耦请求与生成。初期接受同步阻塞，先跑通核心链路。
 
 - LangChain Chain 实现：
-  - `ppt_chain.py` — ✅ PPT 大纲 Prompt + LLM + JSON OutputParser
-  - `word_chain.py` — Word 内容 Prompt + LLM + JSON OutputParser
-  - `pdf_chain.py` — PDF 内容 Prompt + LLM + JSON OutputParser
+  - `ppt_chain.py` — ✅ PPT 视觉描述 Prompt + LLM + JSON
+  - `qa_chain.py` — ✅ PPT 逐页 QA 评分 + 修复循环
+  - `word_chain.py` — ✅ Word 增强 Prompt（图表 + 插图 + 表格）
+  - `word_qa_chain.py` — ✅ Word/PDF 文档 QA + 修复循环
+  - `pdf_chain.py` — ✅ PDF 增强 Prompt（图表 + 插图 + 表格）
 - Office 文件生成器：
-  - `generator/ppt/` — ✅ 基于 python-pptx + 设计系统（6 套主题、7 种布局渲染器、图片集成、QA 评分）
-  - `generator/word/` — 基于 python-docx 的 Word 生成（标题层级、段落样式、表格）
-  - `generator/pdf/` — python-docx → LibreOffice 无头转换
+  - `generator/ppt/` — ✅ python-pptx + 设计系统（6 主题, 7 布局, 图片, QA）
+  - `generator/word/` — ✅ python-docx + DocxBuilder + matplotlib 图表嵌入
+  - `generator/pdf/` — ✅ DocxBuilder + LibreOffice 转换
+- 公共模块：
+  - `generator/_design.py` — ✅ ColorPalette（PPT/Word/PDF 共用 6 套主题）
+  - `generator/_chart_engine.py` — ✅ matplotlib 图表引擎（5 种图表类型）
+  - `generator/_docx_builder.py` — ✅ 增强型 DocxBuilder（图表/图片/表格/封面）
 - LangGraph 生成状态图：
   - `graph/generation_graph.py` — ✅ RAG 检索 → Chain 执行 → JSON 校验 → 失败重试（≤3 次）
 - 业务编排：
@@ -518,6 +528,7 @@ langchain-community        langgraph                  langchain-text-splitters
 
 # 文件生成
 python-pptx                python-docx                pypdf
+matplotlib                 numpy                     # 图表生成（Word/PDF 嵌入）
 
 # 向量存储
 redis

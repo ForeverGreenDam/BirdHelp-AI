@@ -1,8 +1,9 @@
 """LangGraph 生成状态图 — RAG 检索 → Chain 执行 → JSON 校验 → 失败重试。
 
 支持 PPT / Word / PDF 三种文档类型，通过 state["doc_type"] 分发。
-PPT 额外经过图片获取 + QA 评分流程。
-同步模式下，图的 ainvoke() 会阻塞直到生成完成或所有重试耗尽。
+PPT: 额外经过 图片获取 + QA 评分
+Word: 额外经过 图表渲染 + 图片获取 + 文档 QA
+PDF: 额外经过 图表渲染 + 图片获取（QA 复用 Word QA 链）
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ EXTENSION_MAP = {"ppt": ".pptx", "word": ".docx", "pdf": ".pdf"}
 # ── 状态定义 ──
 
 class GenerationState(TypedDict, total=False):
-    """文档生成状态 — 所有字段由 LangGraph 按"后写入覆盖"语义合并。"""
+    """文档生成状态。"""
 
     user_id: str
     project_id: str
@@ -46,17 +47,13 @@ class GenerationState(TypedDict, total=False):
     slide_count: int
     word_count: int
 
-    # PPT 图片与 QA
     enable_images: bool
 
     context: str
     chain_output: str
     parsed_outline: dict[str, Any]
 
-    # 图片获取产物
     images_map: dict[str, list[str]]
-
-    # Q&A 产物
     qa_reports: list[dict]
 
     attempt: int
@@ -70,12 +67,12 @@ _graph: Any = None
 
 
 def _build_graph() -> StateGraph:
-    """构建并编译生成状态图，全局复用。"""
     builder = StateGraph(GenerationState)
 
     builder.add_node("retrieve_context", _retrieve_context)
     builder.add_node("generate_outline", _generate_outline)
     builder.add_node("validate_outline", _validate_outline)
+    builder.add_node("render_charts", _render_charts)
     builder.add_node("fetch_images", _fetch_images)
     builder.add_node("run_qa", _run_qa)
     builder.add_node("build_document", _build_document)
@@ -86,12 +83,14 @@ def _build_graph() -> StateGraph:
     builder.add_edge("generate_outline", "validate_outline")
 
     builder.add_conditional_edges("validate_outline", _route_after_validate, {
+        "render_charts": "render_charts",
         "fetch_images": "fetch_images",
         "build": "build_document",
         "retry": "generate_outline",
         "error": "handle_error",
     })
 
+    builder.add_edge("render_charts", "fetch_images")
     builder.add_edge("fetch_images", "run_qa")
     builder.add_edge("run_qa", "build_document")
     builder.add_edge("build_document", END)
@@ -101,7 +100,6 @@ def _build_graph() -> StateGraph:
 
 
 def get_generation_graph():
-    """获取编译后的生成状态图单例。"""
     global _graph
     if _graph is None:
         _graph = _build_graph()
@@ -111,26 +109,19 @@ def get_generation_graph():
 # ── 节点实现 ──
 
 async def _retrieve_context(state: GenerationState) -> dict[str, Any]:
-    """RAG 检索节点。"""
     if not state.get("rag_enabled", False):
         logger.info("RAG disabled, skip retrieval")
         return {"context": ""}
-
     user_id = state.get("user_id", "")
     project_id = state.get("project_id", "")
     query = state.get("topic", "")
-    logger.info(f"RAG retrieval for user={user_id} project={project_id} query={query[:50]}...")
-
     context = await retrieve_formatted(str(user_id), str(project_id), query)
     if context:
         logger.info(f"RAG retrieved context: {len(context)} chars")
-    else:
-        logger.warning("RAG returned empty context")
     return {"context": context}
 
 
 async def _generate_outline(state: GenerationState) -> dict[str, Any]:
-    """调用对应 Chain 生成文档大纲。"""
     doc_type = state.get("doc_type", "ppt")
     context = state.get("context", "") or "（无参考资料，请根据通用知识编排）"
     extra = state.get("extra_prompt", "") or "（无额外指令）"
@@ -145,6 +136,7 @@ async def _generate_outline(state: GenerationState) -> dict[str, Any]:
             "word_count": state.get("word_count", 2000),
             "style": style,
             "language": language,
+            "enable_images": state.get("enable_images", True),
             "context": context,
             "extra_prompt": extra,
         })
@@ -154,6 +146,8 @@ async def _generate_outline(state: GenerationState) -> dict[str, Any]:
             "topic": state.get("topic", ""),
             "doc_type": state.get("doc_subtype", "report"),
             "language": language,
+            "style": style,
+            "enable_images": state.get("enable_images", True),
             "context": context,
             "extra_prompt": extra,
         })
@@ -171,13 +165,12 @@ async def _generate_outline(state: GenerationState) -> dict[str, Any]:
     outline = safe_json_parse(raw)
     outline["style"] = style
 
-    slides_count = len(outline.get("sections", outline.get("slides", [])))
-    logger.info(f"generate_outline ({doc_type}): {len(raw)} chars, slides={slides_count}")
+    items_count = len(outline.get("sections", outline.get("slides", [])))
+    logger.info(f"generate_outline ({doc_type}): {len(raw)} chars, items={items_count}")
     return {"chain_output": raw, "parsed_outline": outline}
 
 
 async def _validate_outline(state: GenerationState) -> dict[str, Any]:
-    """校验解析结果。"""
     doc_type = state.get("doc_type", "ppt")
     attempt = state.get("attempt", 0)
     outline = state.get("parsed_outline", {})
@@ -198,72 +191,162 @@ async def _validate_outline(state: GenerationState) -> dict[str, Any]:
     if errors:
         err_msg = "; ".join(errors)
         logger.warning(f"Validation attempt {attempt + 1}/{MAX_RETRIES} failed: {err_msg}")
-        return {
-            "attempt": attempt + 1,
-            "error": err_msg,
-            "parsed_outline": {},
-        }
+        return {"attempt": attempt + 1, "error": err_msg, "parsed_outline": {}}
 
     logger.info(f"Validation passed ({doc_type})")
     return {"attempt": attempt, "error": ""}
 
 
+async def _render_charts(state: GenerationState) -> dict[str, Any]:
+    """为 Word/PDF 文档渲染图表。PPT 的图表通过布局渲染器处理，不在此处。"""
+    doc_type = state.get("doc_type", "ppt")
+    if doc_type == "ppt":
+        return {}
+
+    outline = state.get("parsed_outline", {})
+    sections = outline.get("sections", [])
+
+    from generator._chart_engine import render_chart, _HAS_MPL
+    from generator._design import get_palette
+    from utils.file import ensure_temp_dir
+
+    if not _HAS_MPL:
+        logger.info("Chart rendering skipped (matplotlib not installed)")
+        return {}
+
+    palette = get_palette(state.get("style", "academic"))
+    chart_dir = ensure_temp_dir() / "charts"
+    chart_dir.mkdir(parents=True, exist_ok=True)
+
+    chart_count = 0
+    for section in sections:
+        for chart_spec in section.get("charts", []):
+            chart_name = f"chart_{abs(hash(str(chart_spec))):x}.png"
+            chart_path = chart_dir / chart_name
+            result = render_chart(chart_spec, chart_path, palette)
+            if result and result.exists():
+                chart_count += 1
+
+    logger.info(f"Charts rendered: {chart_count}")
+    return {}
+
+
 async def _fetch_images(state: GenerationState) -> dict[str, Any]:
-    """为需要图片的页面搜索并下载配图。PPT 文档专用。"""
-    if state.get("doc_type") != "ppt" or not state.get("enable_images", False):
-        logger.info("Image fetching skipped")
+    """为需要图片的文档搜索并下载配图。PPT 从 slides 取，Word/PDF 从 sections 取。"""
+    doc_type = state.get("doc_type", "ppt")
+    if not state.get("enable_images", False):
+        logger.info("Image fetching disabled")
         return {"images_map": {}}
 
-    from generator.ppt.image_provider import fetch_images_for_slides
+    from generator.ppt.image_provider import _search_unsplash, _search_pexels, \
+        _download_image, _generate_placeholder, _images_dir, _query_hash
 
-    slides = state.get("parsed_outline", {}).get("slides", [])
-    if not slides:
+    outline = state.get("parsed_outline", {})
+
+    # 收集所有 image_query
+    queries: list[str] = []
+    if doc_type == "ppt":
+        for slide in outline.get("slides", []):
+            vp = slide.get("visual_plan", {})
+            if vp.get("strategy") == "BASIC_GRAPHICS_ONLY":
+                continue
+            q = slide.get("image_query", "").strip()
+            if q:
+                queries.append(q)
+    else:
+        for section in outline.get("sections", []):
+            for img in section.get("images", []):
+                q = img.get("query", "").strip()
+                if q:
+                    queries.append(q)
+
+    if not queries:
+        logger.info("No image queries found")
         return {"images_map": {}}
 
-    logger.info(f"Fetching images for {len(slides)} slides...")
-    images_map = await fetch_images_for_slides(slides)
-    logger.info(f"Image fetch complete: {len(images_map)} slides got images")
-    return {"images_map": images_map}
+    import asyncio
+    semaphore = asyncio.Semaphore(settings.ppt_max_concurrent_slides)
+    results: dict[str, list[str]] = {}
+
+    async def _process_one(idx: int, query: str) -> None:
+        async with semaphore:
+            dest = _images_dir() / f"doc_img_{idx:02d}-{_query_hash(query)}.jpg"
+            if dest.exists():
+                results[f"img_{idx:02d}"] = [str(dest)]
+                return
+            # Unsplash
+            unsplash_results = await _search_unsplash(query)
+            if unsplash_results:
+                url = unsplash_results[0].get("urls", {}).get("regular", "")
+                if url and await _download_image(url, dest):
+                    results[f"img_{idx:02d}"] = [str(dest)]
+                    return
+            # Pexels
+            pexels_results = await _search_pexels(query)
+            if pexels_results:
+                url = pexels_results[0].get("src", {}).get("large", "")
+                if url and await _download_image(url, dest):
+                    results[f"img_{idx:02d}"] = [str(dest)]
+                    return
+            # 占位图
+            placeholder_path = _images_dir() / f"doc_img_{idx:02d}-placeholder.png"
+            if _generate_placeholder(query, placeholder_path):
+                results[f"img_{idx:02d}"] = [str(placeholder_path)]
+
+    await asyncio.gather(*[_process_one(i, q) for i, q in enumerate(queries)])
+    logger.info(f"Doc image fetch complete: {len(results)}/{len(queries)} images")
+    return {"images_map": results}
 
 
 async def _run_qa(state: GenerationState) -> dict[str, Any]:
-    """逐页质量评估 + 修复循环。PPT 文档专用。"""
-    if state.get("doc_type") != "ppt":
-        logger.info("QA skipped (non-PPT document)")
-        return {"qa_reports": []}
-
-    from chains.qa_chain import PptQAChain
-
+    """质量评估。PPT 用 PptQAChain，Word/PDF 用 DocQAChain。"""
+    doc_type = state.get("doc_type", "ppt")
     outline = state.get("parsed_outline", {})
-    slides = outline.get("slides", [])
     style = state.get("style", "academic")
 
-    if not slides:
-        return {"qa_reports": []}
-
-    logger.info(f"Running QA on {len(slides)} slides (threshold={settings.ppt_qa_score_threshold})...")
-    qa_chain = PptQAChain()
-    repaired_slides, reports = await qa_chain.evaluate_all(
-        slides,
-        style=style,
-        threshold=settings.ppt_qa_score_threshold,
-        max_rounds=settings.ppt_max_repair_rounds,
-    )
-
-    outline["slides"] = repaired_slides
-    return {
-        "parsed_outline": outline,
-        "qa_reports": [{"slide_index": r.slide_index, "score": r.score,
-                        "passed": r.passed,
-                        "issues": [c.detail for c in r.all_issues]}
-                       for r in reports],
-    }
+    if doc_type == "ppt":
+        from chains.qa_chain import PptQAChain
+        slides = outline.get("slides", [])
+        if not slides:
+            return {"qa_reports": []}
+        logger.info(f"Running PPT QA on {len(slides)} slides...")
+        qa_chain = PptQAChain()
+        repaired_slides, reports = await qa_chain.evaluate_all(
+            slides, style=style,
+            threshold=settings.ppt_qa_score_threshold,
+            max_rounds=settings.ppt_max_repair_rounds,
+        )
+        outline["slides"] = repaired_slides
+        return {
+            "parsed_outline": outline,
+            "qa_reports": [{"slide_index": r.slide_index, "score": r.score,
+                            "passed": r.passed,
+                            "issues": [c.detail for c in r.all_issues]}
+                           for r in reports],
+        }
+    else:
+        from chains.word_qa_chain import DocQAChain
+        logger.info(f"Running doc QA for {doc_type}...")
+        qa_chain = DocQAChain()
+        fixed_outline, report = await qa_chain.evaluate_with_repair(
+            outline,
+            doc_type=state.get("doc_subtype", "essay"),
+            word_count=state.get("word_count", 2000),
+            style=style,
+            threshold=settings.ppt_qa_score_threshold,
+            max_rounds=settings.ppt_max_repair_rounds,
+        )
+        return {
+            "parsed_outline": fixed_outline,
+            "qa_reports": [{"score": report.score, "passed": report.passed,
+                            "issues": [c.detail for c in report.all_issues]}],
+        }
 
 
 async def _build_document(state: GenerationState) -> dict[str, Any]:
-    """将校验通过的大纲构建为文档文件。"""
     doc_type = state.get("doc_type", "ppt")
     outline = state.get("parsed_outline", {})
+    images_map = state.get("images_map", {})
 
     ensure_temp_dir()
     extension = EXTENSION_MAP.get(doc_type, ".pptx")
@@ -271,20 +354,18 @@ async def _build_document(state: GenerationState) -> dict[str, Any]:
 
     if doc_type == "word":
         generator = WordGenerator()
-        actual_path = generator.generate(outline, file_path)
+        actual_path = generator.generate(outline, file_path, images_map=images_map)
     elif doc_type == "pdf":
         generator = PdfGenerator()
-        actual_path = generator.generate(outline, file_path)
+        actual_path = generator.generate(outline, file_path, images_map=images_map)
     else:
         generator = PptGenerator()
-        images_map = state.get("images_map", {})
         actual_path = generator.generate(outline, file_path, images_map=images_map)
 
     return {"file_path": str(actual_path)}
 
 
 async def _handle_error(state: GenerationState) -> dict[str, Any]:
-    """记录最终失败信息。"""
     err = state.get("error", "未知错误")
     max_attempts = state.get("attempt", MAX_RETRIES)
     logger.error(f"Generation failed after {max_attempts} attempts: {err}")
@@ -294,7 +375,6 @@ async def _handle_error(state: GenerationState) -> dict[str, Any]:
 # ── 条件路由 ──
 
 def _route_after_validate(state: GenerationState) -> str:
-    """根据校验结果和模式决定下一步。"""
     error = state.get("error", "")
     attempt = state.get("attempt", 0)
 
@@ -303,8 +383,7 @@ def _route_after_validate(state: GenerationState) -> str:
             return "retry"
         return "error"
 
-    # 校验通过：PPT 走 fetch_images → QA → build，Word/PDF 直接 build
-    if state.get("doc_type") == "ppt":
-        return "fetch_images"
-
-    return "build"
+    doc_type = state.get("doc_type", "ppt")
+    if doc_type in ("word", "pdf"):
+        return "render_charts"
+    return "fetch_images"

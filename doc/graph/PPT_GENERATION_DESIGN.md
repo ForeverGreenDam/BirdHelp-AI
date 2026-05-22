@@ -25,7 +25,8 @@ graph/generation_graph.py ← LangGraph 状态图：RAG → Chain → 校验 →
   ▼
 generator/ppt/generator.py ← PptGenerator（分发到各布局渲染器）
   │
-  ├─ generator/ppt/theme.py      ← 6 套颜色主题
+  ├─ generator/_design.py          ← 公共 ColorPalette（PPT/Word/PDF 共用）
+├─ generator/ppt/theme.py      ← PPT ColorTheme（从 _design 派生）
   ├─ generator/ppt/layout.py     ← 11 种布局类型 + DesignDNA
   ├─ generator/ppt/shapes.py     ← 声明式绘图工具包
   ├─ generator/ppt/layouts/      ← 每种布局的渲染器
