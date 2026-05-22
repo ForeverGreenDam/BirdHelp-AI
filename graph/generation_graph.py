@@ -122,6 +122,8 @@ async def _retrieve_context(state: GenerationState) -> dict[str, Any]:
 
 
 async def _generate_outline(state: GenerationState) -> dict[str, Any]:
+    import time as _time
+    _t0 = _time.monotonic()
     doc_type = state.get("doc_type", "ppt")
     context = state.get("context", "") or "（无参考资料，请根据通用知识编排）"
     extra = state.get("extra_prompt", "") or "（无额外指令）"
@@ -166,7 +168,9 @@ async def _generate_outline(state: GenerationState) -> dict[str, Any]:
     outline["style"] = style
 
     items_count = len(outline.get("sections", outline.get("slides", [])))
-    logger.info(f"generate_outline ({doc_type}): {len(raw)} chars, items={items_count}")
+    _elapsed = _time.monotonic() - _t0
+    logger.info(f"generate_outline ({doc_type}): {len(raw)} chars, items={items_count}, "
+                f"elapsed={_elapsed:.1f}s")
     return {"chain_output": raw, "parsed_outline": outline}
 
 
@@ -243,24 +247,22 @@ async def _fetch_images(state: GenerationState) -> dict[str, Any]:
 
     outline = state.get("parsed_outline", {})
 
-    # 收集所有 image_query
-    queries: list[str] = []
+    # 收集所有 image_query，携带页面索引用于 key 匹配
+    tasks: list[tuple[int, str]] = []
     if doc_type == "ppt":
         for slide in outline.get("slides", []):
-            vp = slide.get("visual_plan", {})
-            if vp.get("strategy") == "BASIC_GRAPHICS_ONLY":
-                continue
             q = slide.get("image_query", "").strip()
             if q:
-                queries.append(q)
+                page_num = slide.get("page_number", 0)
+                tasks.append((page_num, q))
     else:
         for section in outline.get("sections", []):
             for img in section.get("images", []):
                 q = img.get("query", "").strip()
                 if q:
-                    queries.append(q)
+                    tasks.append((0, q))
 
-    if not queries:
+    if not tasks:
         logger.info("No image queries found")
         return {"images_map": {}}
 
@@ -268,41 +270,48 @@ async def _fetch_images(state: GenerationState) -> dict[str, Any]:
     semaphore = asyncio.Semaphore(settings.ppt_max_concurrent_slides)
     results: dict[str, list[str]] = {}
 
-    async def _process_one(idx: int, query: str) -> None:
+    async def _process_one(page_num: int, query: str) -> None:
         async with semaphore:
-            dest = _images_dir() / f"doc_img_{idx:02d}-{_query_hash(query)}.jpg"
+            key = f"slide_{page_num:02d}"
+            dest = _images_dir() / f"slide_{page_num:02d}-{_query_hash(query)}.jpg"
             if dest.exists():
-                results[f"img_{idx:02d}"] = [str(dest)]
+                results[key] = [str(dest)]
                 return
             # Unsplash
             unsplash_results = await _search_unsplash(query)
             if unsplash_results:
                 url = unsplash_results[0].get("urls", {}).get("regular", "")
                 if url and await _download_image(url, dest):
-                    results[f"img_{idx:02d}"] = [str(dest)]
+                    results[key] = [str(dest)]
                     return
             # Pexels
             pexels_results = await _search_pexels(query)
             if pexels_results:
                 url = pexels_results[0].get("src", {}).get("large", "")
                 if url and await _download_image(url, dest):
-                    results[f"img_{idx:02d}"] = [str(dest)]
+                    results[key] = [str(dest)]
                     return
             # 占位图
-            placeholder_path = _images_dir() / f"doc_img_{idx:02d}-placeholder.png"
+            placeholder_path = _images_dir() / f"slide_{page_num:02d}-placeholder.png"
             if _generate_placeholder(query, placeholder_path):
-                results[f"img_{idx:02d}"] = [str(placeholder_path)]
+                results[key] = [str(placeholder_path)]
 
-    await asyncio.gather(*[_process_one(i, q) for i, q in enumerate(queries)])
-    logger.info(f"Doc image fetch complete: {len(results)}/{len(queries)} images")
+    await asyncio.gather(*[_process_one(pn, q) for pn, q in tasks])
+    logger.info(f"Doc image fetch complete: {len(results)}/{len(tasks)} images")
     return {"images_map": results}
 
 
 async def _run_qa(state: GenerationState) -> dict[str, Any]:
     """质量评估。PPT 用 PptQAChain，Word/PDF 用 DocQAChain。"""
+    import time as _time
+    _t0 = _time.monotonic()
     doc_type = state.get("doc_type", "ppt")
     outline = state.get("parsed_outline", {})
     style = state.get("style", "academic")
+
+    if not settings.ppt_qa_enabled:
+        logger.info(f"QA disabled by config, skipping ({doc_type})")
+        return {"qa_reports": []}
 
     if doc_type == "ppt":
         from chains.qa_chain import PptQAChain
@@ -317,6 +326,9 @@ async def _run_qa(state: GenerationState) -> dict[str, Any]:
             max_rounds=settings.ppt_max_repair_rounds,
         )
         outline["slides"] = repaired_slides
+        _elapsed = _time.monotonic() - _t0
+        logger.info(f"QA complete ({doc_type}): {len(slides)} slides, "
+                    f"elapsed={_elapsed:.1f}s")
         return {
             "parsed_outline": outline,
             "qa_reports": [{"slide_index": r.slide_index, "score": r.score,
@@ -336,6 +348,9 @@ async def _run_qa(state: GenerationState) -> dict[str, Any]:
             threshold=settings.ppt_qa_score_threshold,
             max_rounds=settings.ppt_max_repair_rounds,
         )
+        _elapsed = _time.monotonic() - _t0
+        logger.info(f"QA complete ({doc_type}): score={report.score}, "
+                    f"elapsed={_elapsed:.1f}s")
         return {
             "parsed_outline": fixed_outline,
             "qa_reports": [{"score": report.score, "passed": report.passed,

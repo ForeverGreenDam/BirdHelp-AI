@@ -188,21 +188,33 @@ def add_image(
     image_path: str,
 ) -> object:
     """插入图片，自动等比缩放填充指定区域（居中裁剪）。"""
-    from PIL import Image  # noqa: PLC0415 (lazy import, only needed here)
+    from io import BytesIO
+    from PIL import Image
+    from loguru import logger
+
+    # 先尝试直接用 python-pptx 原生插入（兼容性最好）
+    try:
+        return slide.shapes.add_picture(image_path, left, top, width, height)
+    except Exception as native_err:
+        logger.debug(f"add_picture native failed for {image_path}: {native_err}, trying PIL crop")
+
     try:
         with Image.open(image_path) as img:
             img_w, img_h = img.size
-    except Exception:
-        return slide.shapes.add_picture(image_path, left, top, width, height)
+    except Exception as pil_err:
+        logger.warning(f"add_image: both native and PIL failed for {image_path}: {pil_err}")
+        raise
 
     slot_ratio = width / height
     img_ratio = img_w / img_h
 
     if abs(img_ratio - slot_ratio) < 0.01:
-        return slide.shapes.add_picture(image_path, left, top, width, height)
+        buf = BytesIO()
+        img.save(buf, format='PNG')
+        buf.seek(0)
+        return slide.shapes.add_picture(buf, left, top, width, height)
 
     # 等比缩放后居中裁剪
-    from io import BytesIO
     if img_ratio > slot_ratio:
         new_w = int(img_h * slot_ratio)
         offset_x = (img_w - new_w) // 2

@@ -9,7 +9,7 @@ from pptx.enum.text import PP_ALIGN
 from generator.ppt.theme import ColorTheme
 from generator.ppt.layout import DesignDNA
 from generator.ppt.shapes import (
-    add_rect, add_text_box, add_line, add_page_number,
+    add_rect, add_text_box, add_line, add_page_number, add_image,
     set_slide_bg, clear_placeholders, SLIDE_W, SLIDE_H,
 )
 
@@ -120,6 +120,18 @@ def render_grid_cards(
                 font_color=theme.text_body,
                 alignment=PP_ALIGN.LEFT,
             )
+
+    # 底部配图（卡片行数较少时有空间）
+    image_path = images[0] if images else None
+    if image_path and rows <= 2:
+        try:
+            img_top = start_y + rows * (card_h + card_gap_y) + Inches(0.15)
+            img_h = SLIDE_H - img_top - Inches(0.5)
+            if img_h > Inches(0.5):
+                add_image(slide, Inches(2.0), img_top, Inches(9.3), img_h, image_path)
+        except Exception as exc:
+            from loguru import logger
+            logger.warning(f"grid_cards add_image failed: {exc}")
 
     # 页码
     if page_num > 0 and page_num < total - 1:

@@ -105,7 +105,9 @@ def _render_side_by_side(
                 img_w, Inches(5.2),
                 image_path,
             )
-        except Exception:
+        except Exception as exc:
+            from loguru import logger
+            logger.warning(f"add_image failed for slide, falling back to placeholder: {exc}")
             _draw_image_placeholder(slide, img_x, Inches(1.2), img_w, Inches(5.2), theme)
     else:
         _draw_image_placeholder(slide, img_x, Inches(1.2), img_w, Inches(5.2), theme)
@@ -125,7 +127,9 @@ def _render_top_image(
     if image_path:
         try:
             add_image(slide, Inches(0.5), Inches(0.3), Inches(12.3), img_area_h, image_path)
-        except Exception:
+        except Exception as exc:
+            from loguru import logger
+            logger.warning(f"add_image (top) failed for slide, falling back to placeholder: {exc}")
             _draw_image_placeholder(slide, Inches(0.5), Inches(0.3), Inches(12.3), img_area_h, theme)
     else:
         _draw_image_placeholder(slide, Inches(0.5), Inches(0.3), Inches(12.3), img_area_h, theme)

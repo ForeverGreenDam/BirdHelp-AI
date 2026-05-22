@@ -9,7 +9,7 @@ from generator.ppt.theme import ColorTheme
 from generator.ppt.layout import DesignDNA
 from generator.ppt.shapes import (
     add_rect, add_accent_bar, add_text_box, add_line,
-    add_multiline_text_box, add_page_number,
+    add_multiline_text_box, add_page_number, add_image,
     set_slide_bg, clear_placeholders, SLIDE_W, SLIDE_H,
 )
 
@@ -51,14 +51,22 @@ def render_two_column(
             width=1.5,
         )
 
-    # 将内容均分为左右两栏
-    mid = len(body) // 2 if len(body) > 1 else 1
-    left_items = body[:mid]
-    right_items = body[mid:]
+    # 将内容分为左右两栏
+    # 当 body 恰为 2 个元素时视为 [左栏内容, 右栏内容]，每项按换行拆分为要点
+    if len(body) == 2:
+        left_raw, right_raw = body[0], body[1]
+        left_items = [l.strip() for l in str(left_raw).split("\n") if l.strip()]
+        right_items = [r.strip() for r in str(right_raw).split("\n") if r.strip()]
+    else:
+        mid = len(body) // 2 if len(body) > 1 else 1
+        left_items = body[:mid]
+        right_items = body[mid:]
 
     col_w = Inches(5.6)
+    image_path = images[0] if images else None
+    # 有图片时缩短列高，为底部图片留空间
     col_top = Inches(1.8)
-    col_h = Inches(4.8)
+    col_h = Inches(3.5) if image_path else Inches(4.8)
 
     # 左栏
     if left_items:
@@ -137,6 +145,15 @@ def render_two_column(
             right_lines,
             theme,
         )
+
+    # 底部配图
+    if image_path:
+        try:
+            img_top = col_top + col_h + Inches(0.3)
+            img_h = SLIDE_H - img_top - Inches(0.5)
+            add_image(slide, Inches(1.5), img_top, Inches(10.3), img_h, image_path)
+        except Exception:
+            pass
 
     # 页码
     if page_num > 0 and page_num < total - 1:

@@ -69,19 +69,19 @@ QA_SYSTEM_PROMPT = """你是一个文档质量评审专家。对给定的文档 
 ## 输出格式
 
 ```json
-{
+{{
   "score": 85,
   "checks": [
-    {"label": "title存在", "passed": true, "severity": "blocking", "detail": ""},
-    {"label": "sections数量", "passed": true, "severity": "blocking", "detail": "共4个章节"},
-    {"label": "chart数据一致性", "passed": true, "severity": "blocking", "detail": ""},
-    {"label": "table结构", "passed": true, "severity": "blocking", "detail": ""},
-    {"label": "段落完整性", "passed": false, "severity": "high_risk", "detail": "第2章第3段仅28字"},
-    {"label": "chart数据真实性", "passed": true, "severity": "high_risk", "detail": ""},
-    {"label": "image_query质量", "passed": true, "severity": "warning", "detail": ""},
-    {"label": "引用格式", "passed": true, "severity": "warning", "detail": ""}
+    {{"label": "title存在", "passed": true, "severity": "blocking", "detail": ""}},
+    {{"label": "sections数量", "passed": true, "severity": "blocking", "detail": "共4个章节"}},
+    {{"label": "chart数据一致性", "passed": true, "severity": "blocking", "detail": ""}},
+    {{"label": "table结构", "passed": true, "severity": "blocking", "detail": ""}},
+    {{"label": "段落完整性", "passed": false, "severity": "high_risk", "detail": "第2章第3段仅28字"}},
+    {{"label": "chart数据真实性", "passed": true, "severity": "high_risk", "detail": ""}},
+    {{"label": "image_query质量", "passed": true, "severity": "warning", "detail": ""}},
+    {{"label": "引用格式", "passed": true, "severity": "warning", "detail": ""}}
   ]
-}
+}}
 ```
 
 评分: 起始100分，每个阻塞-30，每个高风险-15，每个警告-5，最低0分。"""

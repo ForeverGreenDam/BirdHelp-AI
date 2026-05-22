@@ -67,6 +67,14 @@ class PptGenerator(BaseGenerator):
             img_key = f"slide_{page_num:02d}"
             imgs = images_map.get(img_key, [])
 
+            # 兜底：图片映射中没有对应图片时，为该页当场生成占位图
+            if not imgs and slide_data.get("image_query", "").strip():
+                from generator.ppt.image_provider import _generate_placeholder, _images_dir, _query_hash
+                query = slide_data["image_query"].strip()
+                placeholder_path = _images_dir() / f"{img_key}-fallback.png"
+                if _generate_placeholder(query, placeholder_path):
+                    imgs = [str(placeholder_path)]
+
             layout_type = slide_data.get("layout_type", "text_only")
 
             slide_layout = prs.slide_layouts[_BLANK_LAYOUT_IDX]

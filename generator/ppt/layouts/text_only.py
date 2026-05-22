@@ -10,7 +10,7 @@ from generator.ppt.theme import ColorTheme
 from generator.ppt.layout import DesignDNA
 from generator.ppt.shapes import (
     add_rect, add_accent_bar, add_text_box, add_line,
-    add_multiline_text_box, add_page_number,
+    add_multiline_text_box, add_page_number, add_image,
     set_slide_bg, clear_placeholders, SLIDE_W, SLIDE_H,
 )
 
@@ -22,7 +22,7 @@ def render_text_only(
     dna: DesignDNA,
     images: list[str],
 ) -> None:
-    """渲染纯文字页面：标题 + 装饰 + 要点。"""
+    """渲染纯文字页面：标题 + 装饰 + 要点。有图片时右侧展示配图。"""
     clear_placeholders(slide)
     set_slide_bg(slide, theme.background)
 
@@ -32,13 +32,18 @@ def render_text_only(
     page_num = data.get("page_number", 0)
     total = data.get("_total_pages", 10)
     visual_plan = data.get("visual_plan", {})
+    image_path = images[0] if images else None
+
+    # 有图片时文字区收窄，右侧留给图片
+    text_left = Inches(1.0)
+    text_width = Inches(7.0) if image_path else Inches(11.3)
 
     # 顶部标题栏
     if title:
         add_text_box(
             slide,
-            Inches(1.0), Inches(0.5),
-            Inches(11.3), Inches(0.8),
+            text_left, Inches(0.5),
+            text_width, Inches(0.8),
             title,
             font_name=dna.title_font,
             font_size=dna.title_font_size,
@@ -53,8 +58,8 @@ def render_text_only(
     if has_line or dna.show_decorations:
         add_line(
             slide,
-            Inches(1.0), Inches(1.45),
-            Inches(11.3), Inches(1.45),
+            text_left, Inches(1.45),
+            text_left + text_width, Inches(1.45),
             color=theme.accent,
             width=2.0,
         )
@@ -62,8 +67,8 @@ def render_text_only(
     if subtitle:
         add_text_box(
             slide,
-            Inches(1.0), Inches(1.6),
-            Inches(11.3), Inches(0.6),
+            text_left, Inches(1.6),
+            text_width, Inches(0.6),
             subtitle,
             font_name=dna.body_font,
             font_size=16,
@@ -85,14 +90,28 @@ def render_text_only(
     # 正文要点
     if body:
         body_start_y = Inches(2.3) if subtitle else Inches(1.8)
+        body_h = Inches(4.5)
         lines = _build_body_lines(body, theme, dna)
         add_multiline_text_box(
             slide,
-            Inches(1.3), body_start_y,
-            Inches(11.0), Inches(4.5),
+            text_left + Inches(0.3), body_start_y,
+            text_width - Inches(0.3), body_h,
             lines,
             theme,
         )
+
+    # 右侧配图
+    if image_path:
+        try:
+            add_image(
+                slide,
+                Inches(8.8), Inches(1.5),
+                Inches(3.8), Inches(5.0),
+                image_path,
+            )
+        except Exception as exc:
+            from loguru import logger
+            logger.warning(f"text_only add_image failed: {exc}")
 
     # 页码
     if page_num > 0 and page_num < total - 1:
