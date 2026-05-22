@@ -1,6 +1,9 @@
 # PDF 文档生成设计
 
-> v1.0 | 2026-05-16 | Phase 3 PDF 生成
+> v1.1 | 2026-05-22 | Phase 3 PDF 生成
+
+> **与 PPT 的关系**: PDF 与 PPT 共享同一套 LangGraph 状态图架构 (`graph/generation_graph.py`)，通过 `state["doc_type"]` 字段分发。
+> PPT 拥有设计系统 + 布局渲染器 + 图片集成 + QA 能力，PDF 目前使用基础同步模式。两者共享同一套 LangGraph 架构，未来可为 PDF 扩展类似的增强管道。
 
 ---
 
@@ -62,7 +65,7 @@ POST /ai/pdf/generate
 
 ---
 
-## 四、生成器设计 (`generator/pdf.py`)
+## 四、生成器设计 (`generator/pdf/generator.py`)
 
 **PdfGenerator** — 两步生成策略。
 

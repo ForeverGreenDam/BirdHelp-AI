@@ -56,6 +56,16 @@ class Settings(BaseSettings):
     # ── OCR ──
     paddleocr_lang: str = "ch"
 
+    # ── PPT 复杂生成 ──
+    ppt_qa_enabled: bool = True
+    ppt_qa_score_threshold: int = 70
+    ppt_max_repair_rounds: int = 3
+    ppt_image_enabled: bool = True
+    ppt_image_source: str = "unsplash"
+    ppt_unsplash_access_key: str = ""
+    ppt_pexels_api_key: str = ""
+    ppt_max_concurrent_slides: int = 4
+
     # ── LangSmith (可选) ──
     langsmith_api_key: str = ""
     langsmith_project: str = "BirdHelp-AI"

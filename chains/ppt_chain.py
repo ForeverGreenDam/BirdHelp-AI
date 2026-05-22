@@ -1,4 +1,8 @@
-"""PPT 大纲生成 Chain — Prompt 模板 + LLM 调用 + JSON 结构化输出。"""
+"""PPT 大纲生成 Chain — Prompt 模板 + LLM 调用 + JSON 结构化输出。
+
+产出含 layout_type / visual_plan / image_query 的丰富结构，
+驱动设计系统和布局渲染器生成视觉丰富的幻灯片。
+"""
 
 from typing import Any
 
@@ -9,53 +13,122 @@ from loguru import logger
 from core.llm import create_chat_model
 from utils.format import safe_json_parse
 
-SYSTEM_PROMPT = """你是一个专业的演示文稿设计专家。根据用户提供的主题和参考资料，生成结构化的 PPT 大纲。
+SYSTEM_PROMPT = """你是一个世界级的演示文稿设计专家，擅长信息架构与视觉叙事。你的任务是为每一页幻灯片生成精细的视觉描述，而不仅仅是罗列要点。
 
-## 约束条件
-1. 第 1 页必须是标题页（layout="title_slide"），包含主标题（title）和副标题（subtitle）
-2. 最后一页必须是结束页（layout="blank"），title 为"感谢观看"或"Q&A"，无 content
-3. 中间页面根据内容逻辑自然分段，可穿插章节过渡页（layout="section_header"）
-4. 每页要点 content 不超过 5 条，每条 10–25 字，语言精炼
-5. 总页数必须等于用户指定的数量
-6. 如果用户提供了参考资料，优先基于资料内容编排，确保信息准确
+## 核心原则
+1. **叙事驱动**: 演示文稿应该讲一个故事，每页都是故事的自然推进
+2. **视觉优先**: 每页都要指定 layout_type 和 visual_plan，用视觉元素强化信息
+3. **精确指引**: image_query 必须是可搜索的英文关键词，不要写"相关图片"这种空泛描述
+4. **绝不用占位符**: 永远不要输出 "[此处插入图片]"、"TODO" 这类占位文字
+
+## 页面结构约束
+1. 第 1 页: layout_type="cover"，包含主标题(title)和副标题(subtitle)
+2. 最后一页: layout_type="summary"，title 为"感谢观看"或"Q&A"，可加简要总结
+3. 中间可按需插入章节分隔页: layout_type="section"
+4. 总页数必须等于用户指定的数量
+
+## layout_type 选择指南
+
+| 类型 | 适用场景 | 示例 |
+|------|---------|------|
+| cover | 封面，仅第1页 | 标题+副标题+背景装饰 |
+| section | 章节过渡，开启新话题 | 大标题+章节编号 |
+| text_only | 纯文字内容，逻辑要点 | 带装饰形状的要点列表 |
+| text_image | 图文混排，需配图说明 | 左文右图或上图下文 |
+| image_full | 全图背景+文字叠加 | 冲击力强的引述或数据 |
+| two_column | 双栏对比或并列 | 优劣对比、前后对比 |
+| grid_cards | 3-4个并列要点卡片 | 特性列表、方案对比 |
+| timeline | 时间线/步骤 | 发展历程、操作流程 |
+| quote | 金句/引用 | 名人名言、核心观点 |
+| summary | 结束页/总结 | 谢谢观看、联系方式 |
+
+## visual_plan 说明
+
+每页必须包含 visual_plan，其中:
+- strategy: "MEDIA_REQUIRED"(必须有图) / "BASIC_GRAPHICS_ONLY"(纯形状文字) / "AUTO"(按需)
+- bg_treatment: "solid"(纯色) / "gradient"(渐变) / "split"(上下/左右分色) / "framed"(边框装饰)
+- decorations: 装饰元素列表，每个元素含 type/position/size
+
+decorations 可选 type:
+- accent_bar: 侧边强调条 (position: left/right/top/bottom)
+- circle: 圆形装饰 (position: top_right/bottom_left等, size: small/medium/large)
+- line: 分割线 (position: below_title/above_footer)
+- corner_bracket: 角落括号装饰
+- dot_grid: 点阵背景装饰
+
+## image_query 编写规范
+- 使用英文关键词，3-6个词
+- 描述具体场景或抽象概念，而非泛泛描述
+- 好: "medical AI diagnosis deep learning visualization"
+- 差: "相关图片"
+- 纯文字页(strategy=BASIC_GRAPHICS_ONLY)无需填 image_query
+
+## 风格适配
+- academic: 克制装饰，清晰层级，深蓝/深灰为主
+- business: 精确对齐，数据醒目，专业配色
+- creative: 大胆用色，动态构图，曲面/圆形装饰
+- minimal: 大量留白，极少装饰，字体层级清晰
+- tech: 科技感线条，渐变背景，霓虹强调色
+- warm: 暖色调，手绘感装饰，圆角形状
 
 ## 输出格式
-必须输出一个合法的 JSON 对象，不要包含任何额外的解释文字：
+必须输出一个合法的 JSON 对象，不含任何额外文字：
 
 ```
 {{
   "title": "演示文稿主标题",
+  "design_note": "整体设计方向的一句话概括",
   "slides": [
     {{
-      "title": "页面标题",
-      "subtitle": "副标题（可选，仅标题页和章节页使用）",
-      "content": ["要点1", "要点2"],
-      "layout": "title_and_content",
-      "notes": "演讲者备注（可选）"
+      "page_number": 1,
+      "layout_type": "cover",
+      "title": "人工智能在医疗领域的应用",
+      "subtitle": "从诊断到药物研发",
+      "body": ["2026 年度技术报告"],
+      "visual_plan": {{
+        "strategy": "BASIC_GRAPHICS_ONLY",
+        "bg_treatment": "gradient",
+        "decorations": [
+          {{"type": "accent_bar", "position": "left", "color": "accent"}},
+          {{"type": "circle", "position": "bottom_right", "size": "large"}}
+        ]
+      }},
+      "image_query": "",
+      "image_position": "",
+      "notes": ""
+    }},
+    {{
+      "page_number": 3,
+      "layout_type": "text_image",
+      "title": "机器学习诊断流程",
+      "body": [
+        "数据采集：多模态数据输入",
+        "特征提取：深度学习自动提取",
+        "模型推理：集成多专家模型"
+      ],
+      "visual_plan": {{
+        "strategy": "MEDIA_REQUIRED",
+        "layout_hint": "text_left_image_right",
+        "bg_treatment": "solid",
+        "decorations": [
+          {{"type": "line", "position": "below_title", "color": "accent"}}
+        ]
+      }},
+      "image_query": "machine learning medical diagnosis workflow",
+      "image_position": "right",
+      "notes": "重点强调特征提取环节"
     }}
   ]
 }}
 ```
 
-## layout 可用值
-- title_slide：标题页（仅首页）
-- title_and_content：标题 + 要点列表（最常用）
-- section_header：章节过渡页（仅标题，无要点）
-- two_content：左右双栏对比
-- blank：空白页（仅结束页）
-
-## 风格指南
-- academic（学术风格）：严谨正式、结构清晰、术语准确，适合论文答辩、课题汇报
-- business（商务风格）：专业简洁、数据驱动、结论先行，适合商业计划、工作汇报
-- creative（创意风格）：生动活泼、故事性强、视觉冲击，适合产品发布、创意提案
-
-请严格按照以上要求生成大纲。"""
+请严格按照以上要求生成完整的 PPT 页面描述 JSON。"""
 
 HUMAN_TEMPLATE = """## 主题
 {topic}
 
 ## 要求
-- 幻灯片总页数：{slide_count} 页（包含标题页和结束页）
+- 幻灯片总页数：{slide_count} 页（包含封面和结束页）
 - 语言：{language}
 - 风格：{style}
 
@@ -65,11 +138,15 @@ HUMAN_TEMPLATE = """## 主题
 ## 用户补充指令
 {extra_prompt}
 
-请生成完整的 PPT 大纲 JSON。"""
+请生成完整的 PPT 视觉描述 JSON，每页必须包含 layout_type 和 visual_plan。"""
 
 
 class PptChain:
-    """PPT 大纲生成链：Prompt → ChatOpenAI → JSON 解析。"""
+    """PPT 生成链 — Prompt → ChatOpenAI → JSON 解析。
+
+    产出含 layout_type / visual_plan / image_query 的视觉描述，
+    驱动 Generator 的设计系统和布局渲染器。
+    """
 
     def __init__(self) -> None:
         self._prompt: ChatPromptTemplate | None = None
@@ -91,14 +168,7 @@ class PptChain:
         return self._chain
 
     async def ainvoke(self, inputs: dict[str, Any]) -> dict[str, Any]:
-        """异步调用链，返回解析后的结构化大纲。
-
-        Args:
-            inputs: 包含 topic, style, slide_count, language, context, extra_prompt 的 dict
-
-        Returns:
-            {"title": str, "slides": [...], "style": str, "raw": str}
-        """
+        """异步调用链，返回含视觉计划的丰富大纲。"""
         style = inputs.get("style", "academic")
         context = inputs.get("context", "")
         extra = inputs.get("extra_prompt", "")
@@ -117,4 +187,14 @@ class PptChain:
         outline = safe_json_parse(raw)
         outline["style"] = style
         outline["raw"] = raw
+
+        # 规范化：确保 body 是列表
+        outline.setdefault("slides", [])
+        for slide in outline.get("slides", []):
+            body = slide.get("body", slide.get("content", []))
+            if isinstance(body, str):
+                body = [body]
+            slide["body"] = body
+            slide["content"] = body
+
         return outline

@@ -44,9 +44,14 @@ class GenerateRequest(BaseModel):
 
 
 class PptGenerateRequest(GenerateRequest):
-    """PPT 生成请求，扩展风格与页数。"""
-    style: str = Field(default="academic", description="academic / business / creative")
+    """PPT 生成请求，扩展风格、页数、图片选项。"""
+
+    style: str = Field(default="academic", description="academic / business / creative / minimal / tech / warm")
     slide_count: int = Field(default=10, ge=1, le=50)
+    enable_images: bool = Field(
+        default=True,
+        description="是否自动搜索配图（Unsplash → Pexels → 纯色占位图三级降级）",
+    )
 
 
 class WordGenerateRequest(GenerateRequest):

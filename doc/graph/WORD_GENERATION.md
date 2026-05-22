@@ -61,7 +61,7 @@ POST /ai/word/generate
 
 ---
 
-## 四、生成器设计 (`generator/word.py`)
+## 四、生成器设计 (`generator/word/generator.py`)
 
 **WordGenerator** — 基于 python-docx 构建 .docx 文件。
 
