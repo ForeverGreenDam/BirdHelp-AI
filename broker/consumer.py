@@ -186,6 +186,7 @@ class GenerationConsumer:
             return
 
         # ── 阶段 4: 上传文件到 Java ──
+        await self._send_progress(task_msg, "uploading_file", 98, "正在上传文件...")
         try:
             upload_result = await self._upload_file(file_path, task_msg)
         except _RetryableError as exc:
@@ -274,13 +275,24 @@ class GenerationConsumer:
 
     # ── 生成 ──
 
-    @staticmethod
-    async def _run_generation(
-        task_msg: TaskMessage, message: aio_pika.IncomingMessage,
-    ) -> tuple[str, dict[str, Any]]:
-        """执行 LangGraph 生成流水线。返回 (file_path, graph_result)。
+    # LangGraph 节点 → (stage, progress, message)
+    _NODE_PROGRESS = {
+        "retrieve_context": ("retrieving_context", 5, "正在检索参考资料..."),
+        "generate_outline": ("generating_outline", 25, "正在生成文档大纲..."),
+        "validate_outline": ("validating_outline", 40, "正在验证大纲结构..."),
+        "render_charts": ("rendering_charts", 55, "正在渲染图表..."),
+        "fetch_images": ("fetching_images", 70, "正在搜索配图..."),
+        "run_qa": ("running_qa", 85, "正在质量评审..."),
+        "build_document": ("building_document", 95, "正在构建文档文件..."),
+    }
 
-        抛出 _RetryableError 或 _NonRetryableError。
+    async def _run_generation(
+        self, task_msg: TaskMessage, message: aio_pika.IncomingMessage,
+    ) -> tuple[str, dict[str, Any]]:
+        """执行 LangGraph 生成流水线，逐节点推送进度。返回 (file_path, graph_result)。
+
+        使用 graph.astream() 替代 ainvoke()，每完成一个节点即通过
+        POST /api/internal/task/progress 推送当前阶段与进度百分比。
         """
         from graph.generation_graph import get_generation_graph
         from utils.file import ensure_temp_dir
@@ -313,7 +325,14 @@ class GenerationConsumer:
 
         try:
             graph = get_generation_graph()
-            graph_result = await graph.ainvoke(state)
+            # 使用 astream 逐个节点产出，以便推送进度
+            graph_result = dict(state)
+            async for chunk in graph.astream(state, stream_mode="updates"):
+                for node_name, node_output in chunk.items():
+                    graph_result.update(node_output)
+                    if node_name in self._NODE_PROGRESS:
+                        stage, pct, msg = self._NODE_PROGRESS[node_name]
+                        await self._send_progress(task_msg, stage, pct, msg)
         except Exception as exc:
             raise _map_exception(exc)
 
@@ -343,6 +362,28 @@ class GenerationConsumer:
             return result
         except Exception as exc:
             raise _RetryableError(5007, f"文件上传失败: {exc}") from exc
+
+    # ── 进度推送 ──
+
+    @staticmethod
+    async def _send_progress(
+        task_msg: TaskMessage, stage: str, progress: int, message: str,
+    ) -> None:
+        """推送任务进度到 Java。失败仅记日志，不阻塞主流程。"""
+        from client.task import progress as send_progress
+        from broker.schemas import TaskProgress
+
+        prog = TaskProgress(
+            task_id=task_msg.task_id,
+            callback_id=task_msg.callback_id,
+            stage=stage,
+            progress=progress,
+            message=message,
+        )
+        try:
+            await send_progress(prog)
+        except Exception as exc:
+            logger.warning(f"[{task_msg.task_id}] Progress push failed ({stage}): {exc}")
 
     # ── 回调 ──
 
