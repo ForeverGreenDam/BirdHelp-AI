@@ -67,6 +67,16 @@ class Settings(BaseSettings):
     ppt_max_concurrent_slides: int = 4
     # Word/PDF QA 复用 ppt_qa_score_threshold 和 ppt_max_repair_rounds
 
+    # ── RabbitMQ ──
+    rabbitmq_host: str = "127.0.0.1"
+    rabbitmq_port: int = 5672
+    rabbitmq_vhost: str = "/"
+    rabbitmq_user: str = "guest"
+    rabbitmq_password: str = "guest"
+    rabbitmq_exchange: str = "birdhelp.doc.generation"
+    rabbitmq_queue: str = "birdhelp.doc.generation.tasks"
+    rabbitmq_prefetch: int = 1
+
     # ── LangSmith (可选) ──
     langsmith_api_key: str = ""
     langsmith_project: str = "BirdHelp-AI"

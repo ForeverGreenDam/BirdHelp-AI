@@ -1,8 +1,9 @@
 """BirdHelp AI 模块 — FastAPI 应用入口。
 
-负责组装应用、注册路由、异常处理与生命周期管理。
+负责组装应用、注册路由、异常处理、RabbitMQ 消费者生命周期管理。
 """
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -17,14 +18,41 @@ from utils.file import ensure_temp_dir
 
 CHUNK_SIZE = 65536  # ASGI 回放分块大小
 
+_consumer_instance = None
+
+
+async def _start_consumer_safe(consumer) -> None:
+    """包装消费者启动，避免 RabbitMQ 连接失败导致整个应用崩溃。"""
+    try:
+        await consumer.start()
+    except Exception as exc:
+        logger.error(f"RabbitMQ consumer failed to start (HTTP server still running): {exc}")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """应用生命周期回调：启动时初始化临时目录，关闭时打印日志。"""
+    """应用生命周期回调：启动时初始化临时目录与 RabbitMQ 消费者，关闭时停止。"""
+    global _consumer_instance
     logger.info(f"{settings.app_name} starting, env: {'debug' if settings.debug else 'production'}")
     ensure_temp_dir()
+
+    # 启动 RabbitMQ 消费者（后台任务，不阻塞 HTTP 服务）
+    from broker.consumer import GenerationConsumer
+    _consumer_instance = GenerationConsumer()
+    consumer_task = asyncio.create_task(
+        _start_consumer_safe(_consumer_instance)
+    )
+
     yield
+
     logger.info(f"{settings.app_name} shutting down")
+    if _consumer_instance:
+        await _consumer_instance.stop()
+    consumer_task.cancel()
+    try:
+        await consumer_task
+    except asyncio.CancelledError:
+        pass
 
 
 class BodyCacheMiddleware:

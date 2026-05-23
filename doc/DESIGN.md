@@ -1,6 +1,6 @@
 # BirdHelp AI 模块设计文档
 
-> v4.1 | 2026-05-22 | Phase 3 全部完成: PPT/Word/PDF 增强 (设计系统 + 图表引擎 + 图片 + QA)
+> v4.2 | 2026-05-23 | Phase 7 完成: 文档生成异步化 (RabbitMQ + aio-pika)；Phase 3 PPT/Word/PDF 增强已全部完成
 
 ---
 
@@ -35,7 +35,7 @@ Java 后端（已建成）              Python AI 模块（本项目）
 | PPT/Word 图片 OCR | python-pptx/docx 图片提取 + PaddleOCR | 导出嵌入图片 blb → OCR 识别 |
 | OCR 引擎 | PaddleOCR | 中文识别准确率高、离线可用、配置简单 |
 | 同步任务 | FastAPI BackgroundTasks | 轻量场景（素材上传触发摄取），无需额外组件 |
-| 异步任务队列 | RabbitMQ + aio-pika | 生成类长任务解耦；成熟可靠的消息中间件；支持 ACK/重试/死信队列；aio-pika 提供 async 原生 API，兼容 FastAPI |
+| 异步任务队列 | RabbitMQ + aio-pika | ✅ 已实现。生成类长任务解耦；Topic Exchange + 死信队列；ACK/重试/进度通知；aio-pika 提供 async 原生 API |
 | HTTP 客户端 | httpx (async) | 与 FastAPI 异步模型一致，支持连接池复用 |
 | PDF 页面渲染 (OCR 兜底) | PyMuPDF | 纯 C 实现，比 pdf2image + poppler 更轻，Docker 友好 |
 | 配置 | pydantic-settings | 自动加载 .env + 环境变量 |
@@ -98,15 +98,16 @@ BirdHelp/
 │   ├── chat.py            # ⬜ 对话修改业务编排
 │   └── ocr.py             # ⬜ OCR 业务逻辑（含 PDF/PPT/Word 图片 OCR）
 │
-├── worker/                 # 异步任务队列（⬜ 待实现）
-│   ├── broker.py           # ⬜ RabbitMQ 连接管理 + 队列/交换机声明
-│   ├── producer.py         # ⬜ 消息生产者（发布生成任务到队列）
-│   └── consumer.py         # ⬜ 消息消费者（消费任务 → 生成 → 回调）
+├── broker/                 # RabbitMQ 异步消费者（✅ 已实现）
+│   ├── __init__.py         # ✅ 包入口
+│   ├── schemas.py          # ✅ 消息体/回调体 Pydantic 校验（camelCase ↔ snake_case）
+│   └── consumer.py         # ✅ 消费者：解析→额度→生成→上传→回调，ACK/NACK/重试/DLQ
 │
 ├── client/                 # Java 后端调用（✅ 已实现）
 │   ├── http.py             # ✅ RSA-SHA256 签名 HTTP 客户端
 │   ├── quota.py            # ✅ 额度消耗/退还
-│   └── file.py             # ✅ 文件上传/下载/删除
+│   ├── file.py             # ✅ 文件上传/下载/删除
+│   └── task.py             # ✅ 任务完成/失败回调 + 进度推送
 │
 ├── core/                   # 基础设施（✅ 已实现）
 │   ├── llm.py              # ✅ ChatModel 工厂
@@ -132,12 +133,14 @@ BirdHelp/
 | POST | `/ai/material/upload` | 上传 RAG 参考素材并触发摄取 | ✅ |
 | GET | `/ai/material/list` | 查询素材列表 | ✅ |
 | DELETE | `/ai/material/{id}` | 删除素材（Java 回收站 + Redis 向量清理） | ✅ |
-| POST | `/ai/ppt/generate` | 生成 PPT（支持 RAG） | ✅ |
-| POST | `/ai/word/generate` | 生成 Word（支持 RAG） | ✅ |
-| POST | `/ai/pdf/generate` | 生成 PDF（支持 RAG） | ✅ |
+| POST | `/ai/ppt/generate` | 生成 PPT（支持 RAG）| ❌ 已移除 |
+| POST | `/ai/word/generate` | 生成 Word（支持 RAG）| ❌ 已移除 |
+| POST | `/ai/pdf/generate` | 生成 PDF（支持 RAG）| ❌ 已移除 |
 | POST | `/ai/chat/modify` | 对话式修改文档 | ⬜ |
 | POST | `/ai/ocr/recognize` | 独立 OCR 识别接口 | ⬜ |
 | GET | `/ai/task/{task_id}/status` | 查询异步任务状态 | ⬜ |
+
+> **文档生成已异步化**：生产环境不再直接调用 `/ai/{ppt,word,pdf}/generate`。改为 Java → RabbitMQ → Python broker（详见 `doc/RABBITMQ_ASYNC_PROTOCOL.md`）。HTTP 端点保留仅用于开发调试。
 
 所有生成接口请求体统一包含 `material_ids` 和 `rag_enabled` 可选字段。
 
@@ -148,6 +151,8 @@ BirdHelp/
 | POST | `/api/internal/quota/consume` | 生成开始前扣额度 | ✅ |
 | POST | `/api/internal/quota/refund` | 生成失败退额度 | ✅ |
 | POST | `/api/internal/file/upload` | 文件生成完成后上传 | ✅ |
+| POST | `/api/internal/task/callback` | 异步任务完成/失败回调 | ✅ |
+| POST | `/api/internal/task/progress` | 异步任务进度推送 | ✅ |
 
 ---
 
@@ -237,25 +242,30 @@ _load_docx 提取段落文字
 
 ## 六、核心流程
 
-### 6.1 文档生成（API 快速响应 + Worker 异步执行）
+### 6.1 文档生成（RabbitMQ 异步消费）
 
-**Phase 3 同步模式（初期）：** API 直接执行生成流程，请求阻塞直到完成。
-
-**Phase 7 异步模式（后期）：** 生成任务推入消息队列，API 立即返回 `task_id`，前端轮询状态。
+文档生成已全面异步化：Java 后端将任务发布到 RabbitMQ，Python broker 模块消费执行。
 
 ```
-POST /ai/ppt/generate
-  │
-  ├─ 1. 校验 material_ids + rag_enabled
-  ├─ 2. 扣减额度（quota.consume）
-  ├─ 3. 入队 SAQ Queue → 立即返回 {task_id, status: "queued"}
-  │
-  └─ Worker 异步消费:
-         ├─ RAG 检索 (可选) → 注入 context
-         ├─ LangChain Chain 执行 (Prompt → LLM → JSON 解析)
-         ├─ 解析成功? ── YES → 文件生成 → 上传 Java → 任务完成
-         └─ NO (重试 ≤3 次) → 回到 LLM 调用 │ 仍失败 → 退款 (quota.refund)
+Java 后端                              Python AI 模块
+─────────                              ──────────────
+收到用户生成请求
+  → 生成 taskId
+  → publish 消息到 Exchange ────→  broker/consumer.py 消费
+  → 返回 {taskId, status:pending}
+                                     ├─ ① 解析校验消息 (version/docType/字段)
+                                     ├─ ② 调用 Java 扣减额度 (quota.consume)
+                                     ├─ ③ LangGraph 状态图执行
+                                     │     RAG 检索(可选) → Chain → LLM → JSON → QA
+                                     ├─ ④ 文件生成 (PPT/Word/PDF generator)
+                                     ├─ ⑤ 上传文件到 Java (file.upload)
+                                     ├─ ⑥ HTTP 回调通知 (task.callback)
+                                     └─ ⑦ ACK 消息
+
+Java 收到回调 → 更新任务状态 → 前端轮询获得结果
 ```
+
+> 完整消息协议、ACK/NACK 规则、回调格式见 `doc/RABBITMQ_ASYNC_PROTOCOL.md`。
 
 ### 6.2 对话修改
 
@@ -266,101 +276,46 @@ POST /ai/ppt/generate
   → 保存新文件 → 上传
 ```
 
-### 6.3 异步任务架构（Phase 7 引入）
+### 6.3 异步任务架构（Phase 7 — 已实现）
 
-文档生成耗时较长（LLM 推理 10–30s + 文件生成 5–15s），必须异步化以避免 HTTP 超时和阻塞 FastAPI worker 线程。
+文档生成耗时较长（LLM 推理 10–30s + QA 15–40s + 文件生成 5–15s），已通过 RabbitMQ 异步化解耦。
 
-**选型：RabbitMQ + aio-pika**
+**选型：RabbitMQ + aio-pika**（已实现）
 
-```
-FastAPI (producer)                     Worker (consumer)
-─────────────────                     ─────────────────
-POST /ai/ppt/generate
-  → publish message ───┐
-  → return {task_id}   │              ┌─ consumer process
-                        ├─ RabbitMQ ─▶├─ consumer process
-客户端轮询:              │  Queue      └─ consumer process
-GET /ai/task/{id} ← retrieve status ← Redis
-```
-
-**为什么选 RabbitMQ 而非 Celery / SAQ：**
-- RabbitMQ 是成熟可靠的消息中间件，社区庞大、文档丰富、运维经验充足
-- 支持灵活的路由策略（Direct / Topic / Fanout），便于后续扩展不同优先级和类型的任务
-- 内置消息确认（ACK）+ 死信队列（DLX），天然支持重试和故障恢复
-- aio-pika 提供 async 原生的 Python 客户端，完美兼容 FastAPI 的 async/await 模型
-- 任务状态用 Redis 维护（复用已有实例），RabbitMQ 只做消息投递，职责清晰
-
-**消息流设计：**
+**拓扑结构：**
 
 ```
-Exchange: birdhelp.tasks (direct)
-  ├── Routing Key: ppt.generate   → Queue: birdhelp.ppt.queue
-  ├── Routing Key: word.generate  → Queue: birdhelp.word.queue
-  └── Routing Key: pdf.generate   → Queue: birdhelp.pdf.queue
-
-Dead Letter Exchange: birdhelp.dlx (direct)
-  └── Routing Key: failed → Queue: birdhelp.failed.queue
+Exchange: birdhelp.doc.generation (topic, durable)
+  ├── doc.generate.ppt  ─┐
+  ├── doc.generate.word ─┤
+  └── doc.generate.pdf  ─┼→ Queue: birdhelp.doc.generation.tasks (TTL 10min, max_priority 10)
+                          │     ↓ DLX: birdhelp.doc.generation.dlx
+                          │     ↓ DLQ: birdhelp.doc.generation.dlq
+                          │
+                          └→ Python broker/consumer.py (prefetch=1)
 ```
 
-**任务生命周期状态机：**
+**5 阶段消费流程：**
 
 ```
-queued → running → complete
-               ↘ failed → retry (≤3) → complete
-                            ↘ exhausted → DLX → refund_quota → failed
+① 解析校验   → JSON → Pydantic → 版本/docType/字段枚举
+② 扣减额度   → POST /api/internal/quota/consume (失败→回调 + ACK)
+③ 文档生成   → LangGraph.ainvoke (RAG→LLM→QA→文件)
+④ 文件上传   → POST /api/internal/file/upload (失败→最多重试3次)
+⑤ 回调通知   → POST /api/internal/task/callback (completed/failed)
 ```
 
-**Worker 内部流程（以 PPT 生成为例）：**
+**ACK/NACK 规则：**
 
-```python
-import aio_pika
-import json
+| 场景 | 动作 | 入 DLQ |
+|------|------|--------|
+| 生成成功 | ACK | — |
+| 消息格式错误 | NACK(requeue=false) | 是 |
+| 额度不足 | ACK + 回调失败 | — |
+| LLM/上传临时故障 | 重发布(x-retry-count+1) ≤3次 | 超限后入 |
+| 生成逻辑错误 | ACK + 退还额度 + 回调失败 | — |
 
-async def on_ppt_message(message: aio_pika.IncomingMessage):
-    async with message.process():
-        payload = json.loads(message.body)
-        user_id = payload["user_id"]
-
-        # 1. RAG 检索（可选）
-        context = await retrieve_formatted(user_id, payload["query"]) if payload["rag_enabled"] else ""
-
-        # 2. Chain 执行（含重试，利用 DLX 实现最多 3 次）
-        result = await ppt_chain.ainvoke({"context": context, **payload})
-        parsed = parse_result(result)
-
-        # 3. 文件生成
-        file_path = await ppt_generator.generate(parsed)
-
-        # 4. 上传 Java 后端
-        await java_upload(file_path, user_id)
-
-        # 5. 更新任务状态
-        await update_task_status(payload["task_id"], "complete", result={...})
-```
-
-**API 端调用方式：**
-
-```python
-from worker.producer import publish_task
-
-@router.post("/ppt/generate")
-async def generate_ppt(payload: GenerateRequest, user: Depends(get_user)):
-    task_id = await publish_task(
-        routing_key="ppt.generate",
-        user_id=user.id,
-        payload=payload.model_dump(),
-    )
-    return ApiResponse(code=0, data={"task_id": task_id, "status": "queued"})
-```
-
-**任务状态查询接口：**
-
-```
-GET /ai/task/{task_id}/status → {"task_id": "...", "status": "running", "progress": 0.6}
-GET /ai/task/{task_id}/result → {"task_id": "...", "status": "complete", "data": {...}}
-```
-
-任务元数据（状态、进度、结果）存储在 Redis 中，RabbitMQ 仅负责消息投递。
+> 完整规范见 `doc/RABBITMQ_ASYNC_PROTOCOL.md`。
 
 ---
 
@@ -466,56 +421,29 @@ GET /ai/task/{task_id}/result → {"task_id": "...", "status": "complete", "data
    - 超时控制（大文件页数上限、单页超时）
    - GPU 加速支持（PaddleOCR 可选 CUDA 后端）
 
-### Phase 7: 异步任务队列（后续迭代）
+### Phase 7: 异步任务队列 ✅ 已完成
 
-> **优先级：低。** Phase 3–4 先以同步模式跑通，此阶段在时间充裕且生成耗时成为瓶颈时进行。
+> **完成日期：2026-05-23。** 文档生成从同步 HTTP 改为 RabbitMQ 异步消费，彻底解决前端接口超时问题。
 
-**背景：** 文档生成的耗时大头在 LLM 推理（10–30s）和 Office 文件构建（5–15s），单次生成累计可达 20–60 秒。如果 API 同步阻塞执行：HTTP 易超时、FastAPI worker 被占满、前端体验差。引入消息队列解耦提交与执行。
+**实现方案：RabbitMQ + aio-pika**（详见 `doc/RABBITMQ_ASYNC_PROTOCOL.md`）
 
-**技术选型：**
-
-| 选项 | 放弃理由 | 选用理由 |
-|------|----------|----------|
-| Celery + Redis | 项目历史已将其移除（`bd2aede`, `refactor`），过于沉重 | — |
-| **SAQ + Redis** | — | async 原生，不足千行代码；复用已有 Redis 做 broker，零额外运维；天然兼容 FastAPI；支持自动重试、优先级、Dashboard |
-
-**子任务：**
-
-1. **Worker 框架搭建**
-   - `worker/broker.py` — SAQ Queue 初始化，复用已配置的 Redis 连接
-   - `worker/tasks.py` — 生成任务协程定义（`ppt_task`、`word_task`、`pdf_task`）
-   - `worker/jobs.py` — 业务回调：`on_complete`（通知/日志）、`on_failure`（退款 + 错误记录）
-   - 依赖新增：`saq`
-
-2. **API 层适配**
-   - 生成接口（`ppt.py`、`word.py`、`pdf.py`）改为入队模式：`enqueue` → 返回 `task_id`
-   - 新增 `GET /ai/task/{task_id}/status` — 实时查询任务状态
-   - 新增 `GET /ai/task/{task_id}/result` — 完成后获取结果数据
-
-3. **任务状态管理**
-   - SAQ 内置 Job 状态 → 映射到前端展示：`queued` / `running` / `complete` / `failed`
-   - 进度上报（可选）：`ctx.info["progress"] = 0.6`，前端轮询显示进度条
-   - 任务过期清理：TTL 24 小时，避免 Redis 堆积
-
-4. **Worker 进程管理**
-   - 独立 Worker 进程：`saq worker.py --workers 3`（可配置并发数）
-   - systemd / Docker 容器内与 API 一起启动（`Procfile` 或 `docker-compose`）
-   - 优雅关闭：`SIGTERM → 等待当前任务完成 → 退出`
-
-5. **故障恢复**
-   - 任务重试：执行失败自动重试 ≤3 次（SAQ 内置）
-   - 最终失败：退还额度（`quota.refund`）+ 记录错误日志
-   - Worker 崩溃：任务重回队列（SAQ 的 `at_least_once` 语义 + Redis 持久化）
+| 组件 | 实现 |
+|------|------|
+| 消息协议 | v1.0，Java 生产 Python 消费，camelCase JSON，严格字段校验 |
+| 交换机/队列 | `birdhelp.doc.generation` (topic) → `birdhelp.doc.generation.tasks` (TTL 10min, DLX) |
+| 消费者 | `broker/consumer.py` — 5 阶段流水线，ACK/NACK/重试(≤3)/DLQ |
+| 消息校验 | `broker/schemas.py` — Pydantic 模型，版本/类型/字段全覆盖 |
+| 回调 | `client/task.py` — RSA-SHA256 签名 HTTP → `POST /api/internal/task/callback` |
+| 集成 | `main.py` lifespan — 消费者随 FastAPI 自动启动/关闭 |
 
 **架构对比：**
 
-| | Phase 3 同步模式 | Phase 7 异步模式 |
+| | Phase 3 同步模式 | Phase 7 异步模式 (current) |
 |------|------|------|
-| API 响应时间 | 20–60s（阻塞） | < 200ms（仅入队） |
-| 并发能力 | 受 FastAPI worker 数限制 | Worker 可独立横向扩容 |
-| 超时风险 | 高（HTTP/网关超时） | 无（WebSocket/轮询获取结果） |
-| 故障隔离 | 生成崩溃影响 API | Worker 独立，崩溃任务自动重试 |
-| 运维复杂度 | 低（无额外进程） | 中（需管理 Worker 进程） |
+| API 响应时间 | 30–120s（阻塞） | Java 立即返回 taskId，Python 异步消费 |
+| 前端超时 | 高风险 | 无（轮询/WebSocket 获取结果） |
+| 故障隔离 | 生成崩溃影响 API | 消费者独立，消息持久化，重试 + DLQ |
+| 并发能力 | 受 FastAPI worker 限制 | 受 prefetch 控制，可按队列独立扩容 |
 
 ---
 
@@ -536,8 +464,8 @@ redis
 # HTTP 客户端
 httpx
 
-# 异步任务队列（Phase 7 新增）
-saq                        # Simple Async Queue，Redis 背书，async 原生
+# 异步任务队列
+aio-pika                   aiormq                     pamqp
 
 # OCR（Phase 6 新增 PyMuPDF）
 paddleocr                  paddlepaddle

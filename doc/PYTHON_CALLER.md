@@ -226,6 +226,10 @@ public class AiModuleCaller {
 
 ## 五、当前可用接口
 
+> **重要**：文档生成接口（PPT/Word/PDF）已从同步 HTTP 迁移到 RabbitMQ 异步消息。
+> 生产环境 Java 后端应发送消息到 RabbitMQ Exchange `birdhelp.doc.generation`，
+> 而非调用 `/ai/ppt/generate` 等接口。完整协议见 `doc/RABBITMQ_ASYNC_PROTOCOL.md`。
+
 ### 5.1 接口总览
 
 | 方法 | 路径 | Content-Type | 说明 |
@@ -234,9 +238,9 @@ public class AiModuleCaller {
 | DELETE | `/ai/material/{id}` | — | 删除素材（Java 软删除 + 向量清理） |
 | POST | `/ai/material/{id}/reindex` | — | 回收站恢复后重建向量索引 |
 | POST | `/ai/material/{id}/vector-purge` | — | 强制删除后清理残留向量 |
-| POST | `/ai/ppt/generate` | `application/json` | 生成 PPT 文档（支持 RAG 增强） |
-| POST | `/ai/word/generate` | `application/json` | 生成 Word 文档（支持 RAG 增强） |
-| POST | `/ai/pdf/generate` | `application/json` | 生成 PDF 文档（支持 RAG 增强） |
+| — | `/ai/ppt/generate` | — | ❌ 已移除 — 改用 RabbitMQ `doc.generate.ppt` |
+| — | `/ai/word/generate` | — | ❌ 已移除 — 改用 RabbitMQ `doc.generate.word` |
+| — | `/ai/pdf/generate` | — | ❌ 已移除 — 改用 RabbitMQ `doc.generate.pdf` |
 
 ### 5.2 统一响应格式
 
@@ -390,277 +394,19 @@ HttpResponse<String> resp = AiModuleCaller.signedNoBodyRequest(
 {"code": 0, "message": "success", "data": {"deleted_chunks": 35}}
 ```
 
-### 5.7 POST /ai/ppt/generate — 生成 PPT 文档
+### 5.7 文档生成（PPT / Word / PDF）— ❌ 已移除
 
-> JSON 请求。**同步接口**，请求会阻塞 30–90 秒直到生成完成。
+文档生成接口已从 HTTP 同步模式完全迁移到 RabbitMQ 异步模式。
 
-**调用流程：** Java 后端收到前端 PPT 生成请求 → 转发到本接口 → AI 模块执行生成（RAG 检索 → LLM 视觉描述 → 图片搜索 → Q&A 评分 → 设计系统渲染） → 上传文件到 Java 存储 → 返回结果。
+- 原 `POST /ai/ppt/generate` → 现通过 RabbitMQ Exchange `birdhelp.doc.generation`，routing key `doc.generate.ppt`
+- 原 `POST /ai/word/generate` → routing key `doc.generate.word`
+- 原 `POST /ai/pdf/generate` → routing key `doc.generate.pdf`
 
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `user_id` | str | 是 | 用户 ID |
-| `project_id` | str | 是 | 项目 ID，用于知识库隔离 |
-| `topic` | str | 是 | PPT 主题，如 `"Java基础语法教学"` |
-| `language` | str | 否 | 语言：`zh`（中文）/ `en`（英文），默认 `zh` |
-| `style` | str | 否 | 风格：`academic`（学术）/ `business`（商务）/ `creative`（创意）/ `minimal`（极简）/ `tech`（科技）/ `warm`（暖色），默认 `academic` |
-| `slide_count` | int | 否 | 幻灯片页数（含封面和结束页），范围 1–50，默认 10 |
-| `extra_prompt` | str | 否 | 用户补充指令，如 `"重点讲解 async/await 语法"`，默认空 |
-| `enable_images` | bool | 否 | 是否自动搜索配图（Unsplash → Pexels → 纯色占位图降级），默认 `true` |
-| `material_ids` | list[str] | 否 | RAG 参考素材的 `javaFileId` 列表，默认空 |
-| `rag_enabled` | bool | 否 | 是否启用 RAG 检索增强，默认 `false` |
-| `callback_id` | str | 是 | 关联 Java 后端请求 ID，用于额度退还时追溯 |
+Java 后端需：
+1. 将生成任务作为 JSON 消息发布到 RabbitMQ
+2. 实现 `POST /api/internal/task/callback` 接收 Python 的完成/失败回调
 
-```java
-String jsonBody = """
-{
-  "user_id": "1",
-  "project_id": "5",
-  "topic": "Java基础语法教学",
-  "language": "zh",
-  "style": "academic",
-  "slide_count": 10,
-  "extra_prompt": "",
-  "enable_images": true,
-  "material_ids": [],
-  "rag_enabled": false,
-  "callback_id": "550e8400-e29b-41d4-a716-446655440000"
-}
-""";
-HttpResponse<String> resp = AiModuleCaller.signedJsonRequest("POST", "/ai/ppt/generate", jsonBody);
-```
-
-成功响应（生成完成并已上传到 Java 存储）：
-
-```json
-{
-  "code": 0,
-  "message": "success",
-  "data": {
-    "file_id": 128,
-    "file_url": "https://storage.example.com/files/128.pptx",
-    "file_name": "Java基础语法教学.pptx"
-  }
-}
-```
-
-> `data` 对象为 Java 后端文件上传接口 `POST /api/internal/file/upload` 的返回值，具体字段以 Java 端实际响应为准。
-
-**生成失败（大纲校验不通过，已达最大重试次数）：**
-
-```json
-{"code": 3001, "message": "大纲生成失败，已达最大重试次数", "data": null}
-```
-
-**额度不足：**
-
-```json
-{"code": 1001, "message": "额度不足，无法开始生成任务", "data": null}
-```
-
-**内部流程：**
-
-```
-1. AI 调 Java: POST /api/internal/quota/consume（扣额度）
-2. RAG 检索（若 rag_enabled=true）
-3. LLM 生成含 layout_type / visual_plan / image_query 的视觉描述 JSON
-   └─ 校验（title + slides ≥ 2）→ 失败: 重试（最多 3 次）
-4. 图片搜索与下载（若 enable_images=true）: Unsplash → Pexels → 纯色占位图
-5. Q&A 逐页质量评分 + 修复循环（最多 3 轮，阈值 70 分）
-6. 设计系统 + 布局渲染器构建 .pptx（封面/章节/图文混排/双栏/卡片等 7 种布局）
-7. AI 调 Java: POST /api/internal/file/upload（上传文件）
-8. 失败时: POST /api/internal/quota/refund（退还额度）
-```
-
-> **注意：** 本接口为同步模式，Java 端调用时需设置充足的 HTTP 超时（建议 ≥ 120 秒），避免 LLM 推理 + 图片下载 + QA 评估耗时导致超时。
-
-### 5.8 POST /ai/word/generate — 生成 Word 文档
-
-> JSON 请求。**同步接口**，请求会阻塞 30–90 秒直到生成完成。
-
-**调用流程：** Java 后端收到前端 Word 生成请求 → 转发到本接口 → AI 模块执行生成（RAG 检索 → LLM 内容生成 → 图表渲染 → 图片搜索 → QA 评分 → DocxBuilder 构建） → 上传文件到 Java 存储 → 返回结果。
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `user_id` | str | 是 | 用户 ID |
-| `project_id` | str | 是 | 项目 ID，用于知识库隔离 |
-| `topic` | str | 是 | 文档主题，如 `"人工智能发展报告"` |
-| `language` | str | 否 | 语言：`zh` / `en`，默认 `zh` |
-| `doc_type` | str | 否 | 文档类型：`essay` / `report` / `letter` / `paper`，默认 `essay` |
-| `word_count` | int | 否 | 目标字数，范围 500–10000，默认 2000 |
-| `style` | str | 否 | 风格：`academic` / `business` / `creative` / `minimal` / `tech` / `warm`，默认 `academic` |
-| `extra_prompt` | str | 否 | 用户补充指令 |
-| `enable_images` | bool | 否 | 是否自动搜索配图，默认 `true` |
-| `material_ids` | list[str] | 否 | RAG 参考素材 ID 列表 |
-| `rag_enabled` | bool | 否 | 是否启用 RAG，默认 `false` |
-| `callback_id` | str | 是 | 关联 Java 后端请求 ID |
-
-```java
-String jsonBody = """
-{
-  "user_id": "1",
-  "project_id": "5",
-  "topic": "人工智能发展报告",
-  "language": "zh",
-  "doc_type": "report",
-  "word_count": 3000,
-  "style": "tech",
-  "enable_images": true,
-  "extra_prompt": "",
-  "material_ids": [],
-  "rag_enabled": false,
-  "callback_id": "550e8400-e29b-41d4-a716-446655440000"
-}
-""";
-HttpResponse<String> resp = AiModuleCaller.signedJsonRequest("POST", "/ai/word/generate", jsonBody);
-```
-
-成功响应：
-
-```json
-{"code": 0, "message": "success", "data": {"file_id": 129, "file_url": "https://...", "file_name": "人工智能发展报告.docx"}}
-```
-
-**内部流程：**
-
-```
-1. quota.consume（扣额度）
-2. RAG 检索（若 rag_enabled=true）
-3. LLM 生成含 charts/images/tables 的结构化 JSON
-   └─ 校验（title + sections ≥ 1）→ 失败重试 ≤3 次
-4. matplotlib 渲染图表为 PNG
-5. 图片搜索（若 enable_images=true）: Unsplash → Pexels → 占位图
-6. DocQA 评分 + 修复（≤2 轮）
-7. DocxBuilder 构建 .docx（含图表嵌入 + 图片 + 增强表格 + 封面）
-8. file.upload（上传）
-9. 失败: quota.refund（退额度）
-```
-
-> **注意：** Java 端 HTTP 超时建议 ≥ 120 秒，含 LLM+图表+QA 耗时。
-
-### 5.9 POST /ai/pdf/generate — 生成 PDF 文档
-
-> JSON 请求。**同步接口**，请求会阻塞 30–120 秒（含 LibreOffice 转换）。
-
-**调用流程：** Java 后端收到前端 PDF 生成请求 → 转发到本接口 → AI 模块执行生成（RAG → LLM → 图表渲染 → 图片搜索 → QA → DocxBuilder → LibreOffice 转 PDF） → 上传。
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `user_id` | str | 是 | 用户 ID |
-| `project_id` | str | 是 | 项目 ID |
-| `topic` | str | 是 | 文档主题 |
-| `language` | str | 否 | `zh` / `en`，默认 `zh` |
-| `doc_type` | str | 否 | `report` / `resume` / `form`，默认 `report` |
-| `style` | str | 否 | `academic` / `business` / `creative` / `minimal` / `tech` / `warm`，默认 `academic` |
-| `extra_prompt` | str | 否 | 用户补充指令 |
-| `enable_images` | bool | 否 | 是否自动搜索配图，默认 `true` |
-| `material_ids` | list[str] | 否 | RAG 素材 ID 列表 |
-| `rag_enabled` | bool | 否 | 是否启用 RAG，默认 `false` |
-| `callback_id` | str | 是 | 关联 Java 后端请求 ID |
-
-```java
-String jsonBody = """
-{
-  "user_id": "1",
-  "project_id": "5",
-  "topic": "年度工作总结",
-  "language": "zh",
-  "doc_type": "report",
-  "style": "business",
-  "enable_images": true,
-  "extra_prompt": "突出Q3业绩数据",
-  "material_ids": [],
-  "rag_enabled": false,
-  "callback_id": "550e8400-e29b-41d4-a716-446655440000"
-}
-""";
-HttpResponse<String> resp = AiModuleCaller.signedJsonRequest("POST", "/ai/pdf/generate", jsonBody);
-```
-
-成功响应：
-
-```json
-{"code": 0, "message": "success", "data": {"file_id": 130, "file_url": "https://...", "file_name": "年度工作总结.pdf"}}
-```
-
-**内部流程：**
-
-```
-1. quota.consume（扣额度）
-2. RAG 检索（可选）
-3. LLM 生成含 charts/images/tables 的 JSON → 校验 → 重试 ≤3 次
-4. matplotlib 渲染图表为 PNG
-5. 图片搜索（Unsplash → Pexels → 占位图）
-6. DocQA 评分 + 修复（≤2 轮）
-7. DocxBuilder 构建 .docx → LibreOffice --headless → .pdf
-8. file.upload（上传）
-9. 失败: quota.refund（退额度）
-```
-
-> **注意：** 依赖 LibreOffice。建议 HTTP 超时 ≥ 150 秒。
-
-### 5.10 快速调用汇总
-
-```java
-// 素材上传（Java 端先上传文件至存储拿到 fileId，再调用本接口传递已下载的文件）
-byte[] fileContent = Files.readAllBytes(Path.of("material.pdf"));
-AiModuleCaller.signedMultipartRequest(
-    "/ai/material/upload",
-    Map.of("userId", "1", "projectId", "5", "javaFileId", "42"),
-    "file", "material.pdf", fileContent, "application/octet-stream"
-);
-
-// 素材删除
-AiModuleCaller.signedNoBodyRequest("DELETE", "/ai/material/42?userId=1&projectId=5");
-
-// 回收站恢复 → 重建索引
-AiModuleCaller.signedNoBodyRequest("POST",
-    "/ai/material/42/reindex?userId=1&projectId=5&fileName=material.pdf");
-
-// 强制删除 → 清理向量
-AiModuleCaller.signedNoBodyRequest("POST",
-    "/ai/material/42/vector-purge?userId=1&projectId=5");
-
-// PPT 生成
-String pptBody = """
-{
-  "user_id": "1",
-  "project_id": "5",
-  "topic": "Java基础语法教学",
-  "style": "academic",
-  "slide_count": 10,
-  "enable_images": true,
-  "rag_enabled": false,
-  "callback_id": "550e8400-e29b-41d4-a716-446655440000"
-}
-""";
-AiModuleCaller.signedJsonRequest("POST", "/ai/ppt/generate", pptBody);
-
-// Word 生成
-String wordBody = """
-{
-  "user_id": "1", "project_id": "5",
-  "topic": "人工智能发展报告",
-  "doc_type": "report", "word_count": 3000,
-  "style": "tech", "enable_images": true,
-  "rag_enabled": false,
-  "callback_id": "550e8400-e29b-41d4-a716-446655440000"
-}
-""";
-AiModuleCaller.signedJsonRequest("POST", "/ai/word/generate", wordBody);
-
-// PDF 生成
-String pdfBody = """
-{
-  "user_id": "1", "project_id": "5",
-  "topic": "年度工作总结",
-  "doc_type": "report",
-  "style": "business", "enable_images": true,
-  "rag_enabled": false,
-  "callback_id": "550e8400-e29b-41d4-a716-446655440000"
-}
-""";
-AiModuleCaller.signedJsonRequest("POST", "/ai/pdf/generate", pdfBody);
-```
+> 完整协议规范见 `doc/RABBITMQ_ASYNC_PROTOCOL.md`
 
 ---
 

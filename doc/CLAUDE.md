@@ -29,10 +29,11 @@ pip install -r requirements.txt
 - `graph/` — LangGraph 状态图（generation_graph: RAG→生成→检查→重试；chat_graph: 对话修改）
 - `rag/` — RAG 管线（ingestion → retrieval → vector_store）
 - `generator/` — Office 文件生成：PPT（python-pptx + 设计系统）、Word/PDF（python-docx + DocxBuilder + matplotlib 图表 + LibreOffice）
-- `client/` — 调用 Java 后端内部接口（quota / file）
+- `broker/` — RabbitMQ 消费者（消费文档生成任务 → 执行生成 → HTTP 回调通知 Java）
+- `client/` — 调用 Java 后端内部接口（quota / file / task callback）
 - `core/` — 基础设施（ChatModel 工厂、Embedding 工厂、Schemas、异常）
 
-**核心流程**: 请求 → API 层 → LangGraph 状态图 → RAG 检索(可选) → LangChain Chain → LLM 生成 → 文件生成器 → 上传 Java 后端
+**核心流程**: Java → RabbitMQ → broker 消费 → LangGraph 状态图 → RAG 检索(可选) → LangChain Chain → LLM 生成 → 文件生成器 → 上传 Java 后端 → HTTP 回调通知结果
 
 **RAG 管线**: 文件上传 → LangChain Loader 解析 → 清洗 → RecursiveCharacterTextSplitter → Embedding → Redis Stack → 生成时混合检索 (向量+BM25+RRF) → 注入 Prompt
 
@@ -40,7 +41,7 @@ pip install -r requirements.txt
 
 与 Java 后端的双向通信均使用 **RSA-SHA256 签名**（2048 位），无传统 Token。
 
-**AI → Java**（详见 `doc/MD_CALLER.md`）:
+**AI → Java**（详见 `doc/JAVA_CALLER.md`）:
 
 | 接口 | 调用时机 |
 |------|---------|
@@ -49,6 +50,8 @@ pip install -r requirements.txt
 | `POST /api/internal/file/upload` | 文件上传（素材 / 生成结果） |
 | `GET /api/internal/file/{id}/download` | 文件下载 |
 | `DELETE /api/internal/file/{id}` | 软删除文件 |
+| `POST /api/internal/task/callback` | 异步任务完成/失败回调 |
+| `POST /api/internal/task/progress` | 异步任务进度推送（可选） |
 
 **Java → AI**（详见 `doc/PYTHON_CALLER.md`）:
 
@@ -56,12 +59,14 @@ pip install -r requirements.txt
 |------|------|
 | `POST /ai/material/upload` | 上传素材并触发 RAG 摄取 |
 | `DELETE /ai/material/{id}` | 删除素材（回收站 + 向量清理） |
-| `POST /ai/ppt/generate` | 生成 PPT（Phase 3） |
-| `POST /ai/word/generate` | 生成 Word（Phase 3） |
-| `POST /ai/pdf/generate` | 生成 PDF（Phase 3） |
+| `POST /ai/ppt/generate` | ❌ 已移除 → RabbitMQ `doc.generate.ppt` |
+| `POST /ai/word/generate` | ❌ 已移除 → RabbitMQ `doc.generate.word` |
+| `POST /ai/pdf/generate` | ❌ 已移除 → RabbitMQ `doc.generate.pdf` |
 | `POST /ai/chat/modify` | 对话式修改文档（Phase 5） |
 | `POST /ai/ocr/recognize` | OCR 识别（Phase 4） |
 | `GET /ai/task/{task_id}/status` | 任务状态查询（Phase 7） |
+
+> **文档生成已异步化**：Java 后端通过 RabbitMQ 发送生成任务，Python broker 模块消费执行，完成后 HTTP 回调。旧 HTTP 生成接口已移除（详见 `doc/RABBITMQ_ASYNC_PROTOCOL.md`）。
 
 > 两个方向使用**独立的**密钥对，不可混用。AI 模块对外暴露的接口由 Java 后端代理转发给前端，AI 模块不直接面向用户。
 
@@ -74,5 +79,6 @@ pip install -r requirements.txt
 - **python-pptx** / **python-docx** / **LibreOffice** (文件生成)
 - **matplotlib** (图表渲染，Word/PDF 嵌入)
 - **PaddleOCR** (OCR)
+- **RabbitMQ** + **aio-pika** (异步文档生成消息队列)
 - **httpx** (async HTTP 客户端)
 - **pydantic-settings** / **loguru** (配置 / 日志)
