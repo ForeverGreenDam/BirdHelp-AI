@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import aio_pika
+from langchain_core.callbacks import BaseCallbackHandler
 from loguru import logger
 
 from config import settings
@@ -275,7 +276,7 @@ class GenerationConsumer:
 
     # ── 生成 ──
 
-    # LangGraph 节点 → (stage, progress, message)
+    # LangGraph 节点名 → (stage, progress, message)
     _NODE_PROGRESS = {
         "retrieve_context": ("retrieving_context", 5, "正在检索参考资料..."),
         "generate_outline": ("generating_outline", 25, "正在生成文档大纲..."),
@@ -286,13 +287,28 @@ class GenerationConsumer:
         "build_document": ("building_document", 95, "正在构建文档文件..."),
     }
 
+    class _ProgressCallback(BaseCallbackHandler):
+        """LangGraph 节点回调：在节点 START 时推送进度，而非结束后。"""
+
+        def __init__(self, task_msg: TaskMessage, sender):
+            self._task_msg = task_msg
+            self._sender = sender
+
+        async def on_chain_start(
+            self, serialized: dict, inputs: dict, **kwargs: Any,
+        ) -> None:
+            name = serialized.get("name", "") if isinstance(serialized, dict) else ""
+            if name in GenerationConsumer._NODE_PROGRESS:
+                stage, pct, msg = GenerationConsumer._NODE_PROGRESS[name]
+                await self._sender(self._task_msg, stage, pct, msg)
+
     async def _run_generation(
         self, task_msg: TaskMessage, message: aio_pika.IncomingMessage,
     ) -> tuple[str, dict[str, Any]]:
-        """执行 LangGraph 生成流水线，逐节点推送进度。返回 (file_path, graph_result)。
+        """执行 LangGraph 生成流水线，节点开始时推送进度。返回 (file_path, graph_result)。
 
-        使用 graph.astream() 替代 ainvoke()，每完成一个节点即通过
-        POST /api/internal/task/progress 推送当前阶段与进度百分比。
+        通过 LangChain callback 机制在 on_chain_start 时回调推送进度，
+        而非 astream 的节点结束后，确保前端看到阶段名称时该阶段正处于执行中。
         """
         from graph.generation_graph import get_generation_graph
         from utils.file import ensure_temp_dir
@@ -323,16 +339,12 @@ class GenerationConsumer:
             "error": "",
         }
 
+        progress_cb = self._ProgressCallback(task_msg, self._send_progress)
         try:
             graph = get_generation_graph()
-            # 使用 astream 逐个节点产出，以便推送进度
-            graph_result = dict(state)
-            async for chunk in graph.astream(state, stream_mode="updates"):
-                for node_name, node_output in chunk.items():
-                    graph_result.update(node_output)
-                    if node_name in self._NODE_PROGRESS:
-                        stage, pct, msg = self._NODE_PROGRESS[node_name]
-                        await self._send_progress(task_msg, stage, pct, msg)
+            graph_result = await graph.ainvoke(
+                state, config={"callbacks": [progress_cb]},
+            )
         except Exception as exc:
             raise _map_exception(exc)
 
