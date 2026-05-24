@@ -27,3 +27,17 @@ class BaseGenerator:
         if isinstance(raw, dict):
             return raw
         return json.loads(raw)
+
+
+def inject_image_paths(sections: list[dict],
+                       images_map: dict[str, list[str]]) -> None:
+    """将下载好的图片路径按顺序注入到各 section 的 images 中。"""
+    flat_images: list[str] = []
+    for key in sorted(images_map.keys()):
+        flat_images.extend(images_map[key])
+    img_idx = 0
+    for section in sections:
+        for img_spec in section.get("images", []):
+            if img_idx < len(flat_images):
+                img_spec["_local_path"] = flat_images[img_idx]
+                img_idx += 1

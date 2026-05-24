@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import aio_pika
-from langchain_core.callbacks import BaseCallbackHandler
+from langchain_core.callbacks import AsyncCallbackHandler
 from loguru import logger
 
 from config import settings
@@ -287,7 +287,7 @@ class GenerationConsumer:
         "build_document": ("building_document", 95, "正在构建文档文件..."),
     }
 
-    class _ProgressCallback(BaseCallbackHandler):
+    class _ProgressCallback(AsyncCallbackHandler):
         """LangGraph 节点回调：在节点 START 时推送进度，而非结束后。"""
 
         def __init__(self, task_msg: TaskMessage, sender):
@@ -394,6 +394,7 @@ class GenerationConsumer:
         )
         try:
             await send_progress(prog)
+            logger.debug(f"[{task_msg.task_id}] Progress: {stage} ({progress}%) - {message}")
         except Exception as exc:
             logger.warning(f"[{task_msg.task_id}] Progress push failed ({stage}): {exc}")
 

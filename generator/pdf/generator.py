@@ -11,7 +11,7 @@ from typing import Any
 from loguru import logger
 
 from core.exceptions import FileGenerationError
-from generator.base import BaseGenerator
+from generator.base import BaseGenerator, inject_image_paths
 from generator._design import get_palette
 from generator._docx_builder import DocxBuilder
 from utils.file import temp_file_path, ensure_temp_dir
@@ -34,7 +34,7 @@ class PdfGenerator(BaseGenerator):
         enable_images = images_map is not None and len(images_map) > 0
 
         if enable_images:
-            _inject_image_paths(parsed.get("sections", []), images_map)
+            inject_image_paths(parsed.get("sections", []), images_map)
 
         # 1. 构建 .docx（与 Word 共用 DocxBuilder）
         docx_path = temp_file_path(".docx")
@@ -84,17 +84,3 @@ class PdfGenerator(BaseGenerator):
         except Exception as exc:
             logger.error(f"LibreOffice conversion error: {exc}")
             return None
-
-
-def _inject_image_paths(sections: list[dict],
-                        images_map: dict[str, list[str]]) -> None:
-    """将下载好的图片路径按顺序注入到各 section 的 images 中。"""
-    flat_images: list[str] = []
-    for key in sorted(images_map.keys()):
-        flat_images.extend(images_map[key])
-    img_idx = 0
-    for section in sections:
-        for img_spec in section.get("images", []):
-            if img_idx < len(flat_images):
-                img_spec["_local_path"] = flat_images[img_idx]
-                img_idx += 1

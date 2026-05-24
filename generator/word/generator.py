@@ -8,7 +8,7 @@ from typing import Any
 
 from loguru import logger
 
-from generator.base import BaseGenerator
+from generator.base import BaseGenerator, inject_image_paths
 from generator._design import get_palette
 from generator._docx_builder import DocxBuilder
 
@@ -38,7 +38,7 @@ class WordGenerator(BaseGenerator):
 
         # 将图片路径回填到 sections 的 images 中
         if enable_images:
-            self._inject_image_paths(parsed.get("sections", []), images_map)
+            inject_image_paths(parsed.get("sections", []), images_map)
 
         builder = DocxBuilder(palette, enable_images=enable_images, enable_charts=True)
         doc = builder.build_document(parsed)
@@ -50,18 +50,3 @@ class WordGenerator(BaseGenerator):
         logger.info(f"Word generated: {output_path}, {sections_count} sections, "
                     f"style={style_name}")
         return output_path
-
-    @staticmethod
-    def _inject_image_paths(sections: list[dict],
-                            images_map: dict[str, list[str]]) -> None:
-        """将下载好的图片路径按顺序注入到各 section 的 images 中。"""
-        flat_images: list[str] = []
-        for key in sorted(images_map.keys()):
-            flat_images.extend(images_map[key])
-
-        img_idx = 0
-        for section in sections:
-            for img_spec in section.get("images", []):
-                if img_idx < len(flat_images):
-                    img_spec["_local_path"] = flat_images[img_idx]
-                    img_idx += 1

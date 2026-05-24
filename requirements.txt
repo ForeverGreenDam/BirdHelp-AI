@@ -18,3 +18,4 @@ langchain-text-splitters~=0.3.11
 langchain-core~=0.3.86
 pydantic~=2.13.4
 aio-pika==9.5.*
+matplotlib==3.10.*

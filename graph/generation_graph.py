@@ -256,11 +256,13 @@ async def _fetch_images(state: GenerationState) -> dict[str, Any]:
                 page_num = slide.get("page_number", 0)
                 tasks.append((page_num, q))
     else:
+        img_idx = 0
         for section in outline.get("sections", []):
             for img in section.get("images", []):
                 q = img.get("query", "").strip()
                 if q:
-                    tasks.append((0, q))
+                    tasks.append((img_idx, q))
+                    img_idx += 1
 
     if not tasks:
         logger.info("No image queries found")
@@ -269,11 +271,12 @@ async def _fetch_images(state: GenerationState) -> dict[str, Any]:
     import asyncio
     semaphore = asyncio.Semaphore(settings.ppt_max_concurrent_slides)
     results: dict[str, list[str]] = {}
+    key_prefix = "slide" if doc_type == "ppt" else "img"
 
     async def _process_one(page_num: int, query: str) -> None:
         async with semaphore:
-            key = f"slide_{page_num:02d}"
-            dest = _images_dir() / f"slide_{page_num:02d}-{_query_hash(query)}.jpg"
+            key = f"{key_prefix}_{page_num:02d}"
+            dest = _images_dir() / f"{key_prefix}_{page_num:02d}-{_query_hash(query)}.jpg"
             if dest.exists():
                 results[key] = [str(dest)]
                 return
@@ -292,7 +295,7 @@ async def _fetch_images(state: GenerationState) -> dict[str, Any]:
                     results[key] = [str(dest)]
                     return
             # 占位图
-            placeholder_path = _images_dir() / f"slide_{page_num:02d}-placeholder.png"
+            placeholder_path = _images_dir() / f"{key_prefix}_{page_num:02d}-placeholder.png"
             if _generate_placeholder(query, placeholder_path):
                 results[key] = [str(placeholder_path)]
 
