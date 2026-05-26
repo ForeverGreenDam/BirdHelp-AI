@@ -84,15 +84,14 @@ def _build_graph() -> StateGraph:
 
     builder.add_conditional_edges("validate_outline", _route_after_validate, {
         "render_charts": "render_charts",
-        "fetch_images": "fetch_images",
-        "build": "build_document",
+        "run_qa": "run_qa",
         "retry": "generate_outline",
         "error": "handle_error",
     })
 
-    builder.add_edge("render_charts", "fetch_images")
-    builder.add_edge("fetch_images", "run_qa")
-    builder.add_edge("run_qa", "build_document")
+    builder.add_edge("render_charts", "run_qa")
+    builder.add_edge("run_qa", "fetch_images")
+    builder.add_edge("fetch_images", "build_document")
     builder.add_edge("build_document", END)
     builder.add_edge("handle_error", END)
 
@@ -404,4 +403,4 @@ def _route_after_validate(state: GenerationState) -> str:
     doc_type = state.get("doc_type", "ppt")
     if doc_type in ("word", "pdf"):
         return "render_charts"
-    return "fetch_images"
+    return "run_qa"

@@ -100,6 +100,70 @@ POST /ai/word/generate
 | `horizontal_bar` | 横向柱状图 | 长标签排名 |
 | `radar` | 雷达图 | 多维指标对比 |
 
+### 3.1 WordChain 调用链
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant G as Graph._generate_outline
+    participant WC as WordChain
+    participant PT as ChatPromptTemplate
+    participant LLM as ChatOpenAI
+    participant P as StrOutputParser
+
+    G->>WC: chain.ainvoke(inputs)
+    Note over WC: inputs: topic, doc_type,<br/>word_count, style, language,<br/>enable_images, context, extra_prompt
+
+    WC->>PT: 构建 SYSTEM_PROMPT + HUMAN_TEMPLATE
+    PT-->>WC: ChatPromptTemplate
+
+    WC->>WC: prompt | model | parser 管道
+
+    WC->>LLM: ainvoke(prompt_values)
+    Note over LLM: 根据 doc_type 生成<br/>结构化 JSON 描述
+
+    LLM-->>P: 原始字符串
+    P-->>WC: 格式化字符串
+
+    WC->>WC: safe_json_parse(raw)
+    alt JSON 解析成功
+        WC->>WC: 规范化: 确保 sections/tables/references 存在
+        WC-->>G: {parsed_outline dict}
+    else JSON 解析失败
+        WC-->>G: 抛出异常 → Graph 重试 ≤3 次
+    end
+```
+
+### 3.2 DocQAChain 调用链
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant G as Graph._run_qa
+    participant QA as DocQAChain
+    participant LLM as ChatOpenAI
+
+    G->>QA: evaluate_with_repair(outline, doc_type,<br/>word_count, style, threshold=70, max_rounds=3)
+
+    loop 每轮修复 (≤3轮)
+        QA->>LLM: 评估文档质量 (8个维度)
+        Note over LLM: title/sections数量/chart数据一致性<br/>table结构/段落完整性/chart真实性<br/>image_query质量/引用格式
+
+        LLM-->>QA: QA报告 (score + issues)
+
+        alt score ≥ 70 且无阻塞问题
+            QA-->>G: 返回通过的报告
+        else score < 70 或有阻塞问题
+            QA->>LLM: 根据问题列表修复大纲
+            LLM-->>QA: 修复后的大纲
+            Note over QA: 继续下一轮评估
+        end
+    end
+
+    QA-->>G: 返回最终 (repaired_outline, report)
+    Note over G: 降级策略: 保留最佳版本，即使未达标
+```
+
 ---
 
 ## 四、生成器设计
@@ -158,11 +222,93 @@ Word/PDF 文档质量评估，检查维度：
 
 ## 五、状态图集成
 
-`graph/generation_graph.py` 通过 `state["doc_type"] == "word"` 分发：
+`graph/generation_graph.py` 通过 `state["doc_type"] == "word"` 分发。
 
+### 5.1 Word/PDF 状态流转图
+
+```mermaid
+stateDiagram-v2
+    direction LR
+
+    [*] --> retrieve_context: START
+    retrieve_context --> generate_outline: context ready
+    generate_outline --> validate_outline: raw JSON
+    validate_outline --> render_charts: 校验通过
+    validate_outline --> generate_outline: attempt < 3 重试
+    validate_outline --> handle_error: attempt ≥ 3 失败
+
+    render_charts --> fetch_images: 图表PNG就绪
+    fetch_images --> run_qa: 图片就绪
+    run_qa --> build_document: QA通过/降级
+    build_document --> [*]: .docx 生成完成
+
+    handle_error --> [*]: 错误退出
 ```
-Word 路径: validate → render_charts → fetch_images → run_qa → build
+
+### 5.2 Chain-Graph-Generator 关联图
+
+```mermaid
+graph TB
+    subgraph Graph["LangGraph 状态图 (generation_graph.py)"]
+        direction LR
+        N1[retrieve_context]
+        N2[generate_outline]
+        N3[validate_outline]
+        N4[render_charts]
+        N5[fetch_images]
+        N6[run_qa]
+        N7[build_document]
+        N8[handle_error]
+
+        N1 --> N2
+        N2 --> N3
+        N3 -->|通过| N4
+        N3 -->|重试| N2
+        N3 -->|失败| N8
+        N4 --> N5
+        N5 --> N6
+        N6 --> N7
+    end
+
+    subgraph Chains["LangChain Chains"]
+        WC[WordChain<br/>chains/word_chain.py]
+        QA[DocQAChain<br/>chains/word_qa_chain.py]
+    end
+
+    subgraph Generator["生成器层"]
+        CE[ChartEngine<br/>generator/_chart_engine.py]
+        DB[DocxBuilder<br/>generator/_docx_builder.py]
+        WG[WordGenerator<br/>generator/word/generator.py]
+    end
+
+    subgraph External["外部服务"]
+        RAG[(RAG 向量库)]
+        LLM[(ChatOpenAI LLM)]
+        UP[Unsplash/Pexels API]
+        JAVA[Java 后端存储]
+    end
+
+    N1 -.->|检索| RAG
+    N2 ==>|调用 chain.ainvoke| WC
+    WC ==>|LLM 调用| LLM
+    N4 ==>|render_chart| CE
+    N5 -.->|搜索下载| UP
+    N6 ==>|调QA评估| QA
+    QA ==>|LLM 调用| LLM
+    N7 ==>|generate| WG
+    WG ==>|构建文档| DB
+    N7 -.->|上传| JAVA
 ```
+
+**关联说明：**
+
+| 图节点 | 调用的模块 | 数据流向 |
+|--------|-----------|---------|
+| `generate_outline` | `WordChain.chain.ainvoke()` | topic → LLM → raw JSON → safe_json_parse |
+| `render_charts` | `ChartEngine.render_chart()` | chart_spec → matplotlib → PNG 文件 |
+| `fetch_images` | Unsplash / Pexels API | image_query → 搜索 → 下载 → 本地路径 |
+| `run_qa` | `DocQAChain.evaluate_with_repair()` | outline → LLM 评估 → 修复后大纲 |
+| `build_document` | `WordGenerator.generate()` | outline + images_map → DocxBuilder → .docx |
 
 ---
 

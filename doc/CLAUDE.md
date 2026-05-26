@@ -28,7 +28,7 @@ pip install -r requirements.txt
 - `chains/` — LangChain Chain 定义（ppt_chain / word_chain / pdf_chain / chat_chain），封装 Prompt + LLM + OutputParser
 - `graph/` — LangGraph 状态图（generation_graph: RAG→生成→检查→重试；chat_graph: 对话修改）
 - `rag/` — RAG 管线（ingestion → retrieval → vector_store）
-- `generator/` — Office 文件生成：PPT（python-pptx + 设计系统）、Word/PDF（python-docx + DocxBuilder + matplotlib 图表 + LibreOffice）
+- `generator/` — Office 文件生成：PPT（python-pptx + 设计系统 + 11种布局 + 7套场景profile + 图表/表格）、Word/PDF（python-docx + DocxBuilder + matplotlib 图表 + LibreOffice）
 - `broker/` — RabbitMQ 消费者（消费文档生成任务 → 执行生成 → HTTP 回调通知 Java）
 - `client/` — 调用 Java 后端内部接口（quota / file / task callback）
 - `core/` — 基础设施（ChatModel 工厂、Embedding 工厂、Schemas、异常）

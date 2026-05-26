@@ -2,6 +2,8 @@
 
 渲染器接口: render_<type>(slide, data, theme, dna, images) -> None
 所有模块在 _RENDERERS 中注册，Generator 通过 dispatch() 调用。
+
+Phase 3 新增: chart / table / big_number / timeline 独立渲染器
 """
 
 from generator.ppt.layouts.cover import render_cover
@@ -11,6 +13,10 @@ from generator.ppt.layouts.text_image import render_text_image
 from generator.ppt.layouts.two_column import render_two_column
 from generator.ppt.layouts.grid_cards import render_grid_cards
 from generator.ppt.layouts.summary import render_summary
+from generator.ppt.layouts.chart import render_chart
+from generator.ppt.layouts.table import render_table
+from generator.ppt.layouts.big_number import render_big_number
+from generator.ppt.layouts.timeline import render_timeline
 from generator.ppt.layout import LayoutType
 
 
@@ -23,10 +29,15 @@ _RENDERERS = {
     LayoutType.TWO_COLUMN: render_two_column,
     LayoutType.GRID_CARDS: render_grid_cards,
     LayoutType.SUMMARY: render_summary,
+    # Phase 2: 数据可视化
+    LayoutType.CHART: render_chart,
+    LayoutType.TABLE: render_table,
+    # Phase 3: 展示型布局
+    LayoutType.BIG_NUMBER: render_big_number,
+    LayoutType.TIMELINE: render_timeline,
     # 尚未实现独立渲染器的类型，回退到 text_only
     LayoutType.TOC: render_text_only,
     LayoutType.IMAGE_FULL: render_text_only,
-    LayoutType.TIMELINE: render_text_only,
     LayoutType.QUOTE: render_text_only,
 }
 

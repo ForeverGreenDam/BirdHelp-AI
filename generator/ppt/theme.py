@@ -23,10 +23,21 @@ class ColorTheme:
     text_body: RGBColor
     title_font: str
     body_font: str
+    # 图表/表格专用色（Phase 2 新增）
+    chart_colors: list[RGBColor] | None = None
+    table_header_fill: RGBColor | None = None
+    table_alt_fill: RGBColor | None = None
+    table_border: RGBColor | None = None
 
     @property
     def accent_hex(self) -> str:
         return f"{self.accent[0]:02X}{self.accent[1]:02X}{self.accent[2]:02X}"
+
+    def get_chart_colors(self) -> list[RGBColor]:
+        """获取图表数据系列颜色，回退到基于 primary 的派生色。"""
+        if self.chart_colors:
+            return self.chart_colors
+        return [self.primary, self.secondary, self.accent]
 
     @classmethod
     def from_palette(cls, palette: ColorPalette) -> "ColorTheme":
@@ -34,6 +45,10 @@ class ColorTheme:
         def rgb(h: str) -> RGBColor:
             h = h.lstrip("#")
             return RGBColor(int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+
+        chart_colors = [rgb(c) for c in palette.get_chart_colors()]
+        table_header = rgb(palette.get_table_header_fill())
+
         return cls(
             name=palette.name,
             primary=rgb(palette.primary), secondary=rgb(palette.secondary),
@@ -42,6 +57,10 @@ class ColorTheme:
             text_primary=rgb(palette.text_primary), text_secondary=rgb(palette.text_secondary),
             text_body=rgb(palette.text_body),
             title_font=palette.title_font, body_font=palette.body_font,
+            chart_colors=chart_colors,
+            table_header_fill=table_header,
+            table_alt_fill=rgb(palette.table_alt_fill),
+            table_border=rgb(palette.table_border),
         )
 
 

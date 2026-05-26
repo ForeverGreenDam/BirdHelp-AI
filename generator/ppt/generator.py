@@ -76,6 +76,13 @@ class PptGenerator(BaseGenerator):
                     imgs = [str(placeholder_path)]
 
             layout_type = slide_data.get("layout_type", "text_only")
+            strategy = slide_data.get("visual_plan", {}).get("strategy", "AUTO")
+            logger.debug(
+                f"Slide {page_num}/{total}: layout={layout_type}, "
+                f"strategy={strategy}, "
+                f"image_query={slide_data.get('image_query', '')[:50]}, "
+                f"has_images={len(imgs) > 0}"
+            )
 
             slide_layout = prs.slide_layouts[_BLANK_LAYOUT_IDX]
             slide = prs.slides.add_slide(slide_layout)

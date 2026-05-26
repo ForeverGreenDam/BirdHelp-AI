@@ -16,9 +16,8 @@ from generator.ppt.theme import get_theme, ColorTheme
 class LayoutType(str, Enum):
     """页面布局类型，LLM 在每页 JSON 中指定此枚举值。
 
-    已实现独立渲染器的类型: cover / section / text_only / text_image /
-    two_column / grid_cards / summary
-    暂回退到 text_only 渲染的类型: toc / image_full / timeline / quote
+    独立渲染器: cover / section / text_only / text_image / two_column /
+    grid_cards / summary / chart / table / big_number / timeline
     """
     COVER = "cover"
     TOC = "toc"
@@ -31,6 +30,9 @@ class LayoutType(str, Enum):
     TIMELINE = "timeline"
     QUOTE = "quote"
     SUMMARY = "summary"
+    CHART = "chart"
+    TABLE = "table"
+    BIG_NUMBER = "big_number"
 
 
 class VisualStrategy(str, Enum):
@@ -45,6 +47,7 @@ class DesignDNA:
     """设计 DNA — 由主题哈希确定性派生的视觉参数集合。
 
     所有布局渲染器接收 DNA 并根据其字段调整渲染细节。
+    Phase 3: 新增 info_density 和 profile 引用字段。
     """
 
     theme_name: str
@@ -57,6 +60,9 @@ class DesignDNA:
     decoration_level: str = "moderate"  # "minimal" | "moderate" | "rich"
     cover_variant: int = 0              # 封面变体索引 (0-2)
     section_variant: int = 0            # 章节页变体索引 (0-2)
+    # Phase 3 新增
+    info_density: str = "balanced"      # "sparse" | "balanced" | "high" | "extreme"
+    profile_name: str = ""              # 关联的场景 profile 名
 
     @property
     def corner_radius(self) -> int:
@@ -75,14 +81,28 @@ class DesignDNA:
     def title_font_size(self) -> int:
         return {"sparse": 36, "balanced": 32, "dense": 28}[self.density]
 
+    @property
+    def can_use_charts(self) -> bool:
+        """场景是否适合使用图表。"""
+        return self.info_density in ("balanced", "high", "extreme")
+
+    @property
+    def can_use_tables(self) -> bool:
+        """场景是否适合使用表格。"""
+        return self.info_density in ("balanced", "high", "extreme")
+
 
 def create_dna(style_name: str, topic: str = "", layout_family: int | None = None) -> DesignDNA:
     """根据风格名 + 主题创建确定性的 DesignDNA。
 
     基于 topic + style 的 SHA256 哈希产生确定性的视觉参数，
     同一主题每次生成结果相同，不同主题有所变化。
+    Phase 3: 从场景 profile 读取 info_density 等参数。
     """
+    from generator.ppt.profiles import get_profile
+
     theme = get_theme(style_name)
+    profile = get_profile(style_name)
     seed = hashlib.sha256(f"{topic}:{style_name}".encode()).hexdigest()
     seed_int = int(seed[:8], 16)
 
@@ -101,4 +121,6 @@ def create_dna(style_name: str, topic: str = "", layout_family: int | None = Non
         decoration_level=decoration_options[(seed_int // 9) % 3],
         cover_variant=seed_int % 3,
         section_variant=(seed_int // 2) % 3,
+        info_density=profile.info_density,
+        profile_name=profile.name,
     )
