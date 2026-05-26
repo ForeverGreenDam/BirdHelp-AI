@@ -161,9 +161,12 @@ def render_two_column(
 
 
 def _build_body_lines(body: list[str], theme: ColorTheme, dna: DesignDNA) -> list[dict]:
+    if isinstance(body, str):
+        body = [body]
     lines = []
     for item in body:
-        if not item.strip():
+        item = str(item).strip()
+        if not item:
             continue
         lines.append({
             "text": item,

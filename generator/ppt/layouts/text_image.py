@@ -161,10 +161,13 @@ def _render_top_image(
 
 
 def _build_body_lines(body: list[str], theme: ColorTheme, dna: DesignDNA) -> list[dict]:
-    """将要点列表转为多行配置。"""
+    """将要点列表转为多行配置。兼容 LLM 修复时输出的字符串格式。"""
+    if isinstance(body, str):
+        body = [body]
     lines = []
     for item in body:
-        if not item.strip():
+        item = str(item).strip()
+        if not item:
             continue
         lines.append({
             "text": item,

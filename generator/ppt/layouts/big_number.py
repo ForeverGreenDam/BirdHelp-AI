@@ -81,7 +81,9 @@ def render_big_number(
 
 
 def _parse_metrics(body: list) -> list[tuple[str, str]]:
-    """解析 body 中的 '数字 | 标签' 格式。"""
+    """解析 body 中的 '数字 | 标签' 格式。兼容 LLM 修复时输出的字符串格式。"""
+    if isinstance(body, str):
+        body = [body]
     metrics = []
     for item in body:
         text = str(item).strip()

@@ -165,6 +165,8 @@ def render_timeline(
 
 def _parse_nodes(body: list) -> list[tuple[str, str, str]]:
     """解析 '时间 | 标题 | 描述' 格式为节点列表。"""
+    if isinstance(body, str):
+        body = [body]
     nodes = []
     for item in body:
         text = str(item).strip()
