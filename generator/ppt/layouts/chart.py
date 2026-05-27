@@ -150,6 +150,8 @@ def render_chart(
                 dl.show_percentage = True
                 dl.show_category_name = True
                 dl.show_value = False  # 饼图用百分比代替值
+                # 饼图扇区内标签使用白色字体，确保与彩色扇区有足够对比度
+                dl.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
             elif chart_type_str in ("bar", "bar_stacked"):
                 dl.show_value = True
                 dl.font.size = Pt(8)

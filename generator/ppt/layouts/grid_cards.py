@@ -92,14 +92,14 @@ def render_grid_cards(
             sep = ": " if ": " in card_text else "："
             card_title, card_desc = card_text.split(sep, 1)
         else:
-            card_title = card_text[:15]
-            card_desc = card_text[15:] if len(card_text) > 15 else ""
+            card_title = card_text[:20]
+            card_desc = card_text[20:] if len(card_text) > 20 else ""
 
         # 卡片标题
         add_text_box(
             slide,
             cx + Inches(0.3), cy + Inches(0.3),
-            card_w - Inches(0.6), Inches(0.5),
+            card_w - Inches(0.6), Inches(0.6),
             card_title,
             font_name=dna.title_font,
             font_size=18,
@@ -112,8 +112,8 @@ def render_grid_cards(
         if card_desc:
             add_text_box(
                 slide,
-                cx + Inches(0.3), cy + Inches(0.9),
-                card_w - Inches(0.6), card_h - Inches(1.1),
+                cx + Inches(0.3), cy + Inches(1.0),
+                card_w - Inches(0.6), card_h - Inches(1.2),
                 card_desc,
                 font_name=dna.body_font,
                 font_size=14,
