@@ -1,6 +1,9 @@
 """RabbitMQ 消息体 Pydantic 模型，负责解析与校验 Java 端发出的生成任务消息。
 
 字段名使用 camelCase（与 Java 端约定一致），通过 alias 映射到 Python snake_case。
+
+协议版本 v1.0: java 端在消息中直接携带 LLM 配置（apiKey/baseUrl/modelName），
+Python 端消费后注入 create_chat_model()，无需自行管理密钥。
 """
 
 from __future__ import annotations
@@ -36,6 +39,11 @@ class TaskMessage(BaseModel):
     language: str = Field(alias="language")
     rag_enabled: bool = Field(alias="ragEnabled")
     timestamp: int = Field(alias="timestamp")
+
+    # ── LLM 配置（由 Java 端注入，为空时自动降级到 .env） ──
+    api_key: str = Field(default="", alias="apiKey")
+    base_url: str = Field(default="", alias="baseUrl")
+    model_name: str = Field(default="", alias="modelName")
 
     # ── 通用选填 ──
     extra_prompt: str | None = Field(default=None, alias="extraPrompt")

@@ -24,7 +24,10 @@ class Settings(BaseSettings):
     java_sign_timeout_seconds: int = 300
     java_caller_public_key_b64: str = ""
 
-    # ── 大模型 ──
+    # ── 大模型（兜底配置） ──
+    # 生产环境：Java 端通过 RabbitMQ 消息注入 api_key / base_url / model_name，
+    #           经由 LangGraph → contextvars → create_chat_model() 使用。
+    # 以下字段仅在直接运行（无 RabbitMQ / 无 Java 后端）时作为兜底。
     llm_api_key: str = ""
     llm_base_url: str = ""
     llm_model: str = "deepseek-chat"
@@ -32,7 +35,9 @@ class Settings(BaseSettings):
     llm_max_retries: int = 3
     llm_timeout: int = 120
 
-    # ── 嵌入模型 ──
+    # ── 嵌入模型配置 ──
+    # embedding_api_key / embedding_base_url 为空时
+    # 自动回退到大模型对应字段（effective 逻辑）。
     embedding_model: str = "text-embedding-3-small"
     embedding_base_url: str = ""
     embedding_api_key: str = ""

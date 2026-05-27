@@ -1,6 +1,6 @@
 # BirdHelp AI 模块设计文档
 
-> v4.2 | 2026-05-23 | Phase 7 完成: 文档生成异步化 (RabbitMQ + aio-pika)；Phase 3 PPT/Word/PDF 增强已全部完成
+> v4.4 | 2026-05-28 | API Key 架构升级：聊天模型凭证由 Java 端通过 RabbitMQ 消息注入；嵌入模型凭证从 .env 读取
 
 ---
 
@@ -111,8 +111,8 @@ BirdHelp/
 │   └── task.py             # ✅ 任务完成/失败回调 + 进度推送
 │
 ├── core/                   # 基础设施（✅ 已实现）
-│   ├── llm.py              # ✅ ChatModel 工厂
-│   ├── embedding.py        # ✅ Embedding 工厂
+│   ├── llm.py              # ✅ ChatModel 工厂（contextvars 注入凭证，.env 兜底）
+│   ├── embedding.py        # ✅ Embedding 工厂（.env 配置，嵌入模型固定）
 │   ├── schemas.py          # ✅ Pydantic 模型
 │   └── exceptions.py       # ✅ 异常 + 错误码
 │
@@ -122,6 +122,45 @@ BirdHelp/
 ```
 
 > ✅ 已实现  |  ⬜ 待实现
+
+### 3.1 API Key 管理（v4.4）
+
+**聊天模型（Chat）：由 Java 端在每次请求中注入**
+
+模型选择是业务决策（用户在前端选了哪个模型），由 Java 端负责。Java 将 `apiKey`、`baseUrl`、`modelName` 直接写入 RabbitMQ 消息体，Python 消费后通过 contextvars 注入 `create_chat_model()`。Python 端不缓存、不持久化聊天模型凭证。
+
+```
+用户在前端选择模型
+  → Java 根据用户选择 / 会员等级确定模型
+    → 从 DB 查出对应的 apiKey / baseUrl
+      → 写入 RabbitMQ 消息 body（apiKey / baseUrl / modelName）
+        → Python broker 消费 → LangGraph state["llm_config"]
+          → contextvars.set() → create_chat_model() 读取
+            → 用完即丢，不落盘不缓存
+```
+
+**嵌入模型（Embedding）：从 .env 读取**
+
+同一 RAG 系统的向量必须由同一模型产出，模型不能随请求切换，因此嵌入模型配置固定写在 `.env` 中（`embedding_model` / `embedding_api_key` / `embedding_base_url`）。`embedding_api_key` / `embedding_base_url` 为空时自动回退到 `llm_api_key` / `llm_base_url`。
+
+```
+create_embeddings()
+  → 读取 settings.embedding_model / embedding_api_key / embedding_base_url
+    → embedding_api_key 为空 → 回退 settings.llm_api_key
+    → embedding_base_url 为空 → 回退 settings.llm_base_url
+```
+
+**对比：**
+
+| | 聊天模型 (Chat) | 嵌入模型 (Embedding) |
+|---|---|---|
+| 注入方式 | RabbitMQ 消息体 | .env 配置文件 |
+| 切换模型 | 用户发起下一个请求立即生效 | 修改 .env 后重启生效 |
+| Python 端是否缓存密钥 | ❌ 用完即丢 | ❌ 启动时一次性加载 |
+| 配置位置 | Java 后端 DB | Python .env |
+
+> 详细集成指南见 `doc/PYTHON_API_KEY_INTEGRATION.md`。
+> 消息协议见 `doc/RABBITMQ_ASYNC_PROTOCOL.md`。
 
 ---
 

@@ -49,6 +49,9 @@ class GenerationState(TypedDict, total=False):
 
     enable_images: bool
 
+    # LLM 配置由 Java 端通过 RabbitMQ 消息注入，透传到 create_chat_model()
+    llm_config: dict[str, str]
+
     context: str
     chain_output: str
     parsed_outline: dict[str, Any]
@@ -123,6 +126,13 @@ async def _retrieve_context(state: GenerationState) -> dict[str, Any]:
 async def _generate_outline(state: GenerationState) -> dict[str, Any]:
     import time as _time
     _t0 = _time.monotonic()
+
+    # 将 Java 端注入的 LLM 配置设置到当前异步上下文，后续 create_chat_model() 自动读取
+    llm_config = state.get("llm_config", {})
+    if llm_config:
+        from core.llm import set_llm_config
+        set_llm_config(llm_config)
+
     doc_type = state.get("doc_type", "ppt")
     context = state.get("context", "") or "（无参考资料，请根据通用知识编排）"
     extra = state.get("extra_prompt", "") or "（无额外指令）"
@@ -307,6 +317,13 @@ async def _run_qa(state: GenerationState) -> dict[str, Any]:
     """质量评估。PPT 用 PptQAChain，Word/PDF 用 DocQAChain。"""
     import time as _time
     _t0 = _time.monotonic()
+
+    # QA chain 也使用 create_chat_model()，需要确保上下文中有 LLM 配置
+    llm_config = state.get("llm_config", {})
+    if llm_config:
+        from core.llm import set_llm_config
+        set_llm_config(llm_config)
+
     doc_type = state.get("doc_type", "ppt")
     outline = state.get("parsed_outline", {})
     style = state.get("style", "academic")

@@ -329,6 +329,12 @@ class GenerationConsumer:
             "slide_count": task_msg.slide_count,
             "word_count": task_msg.word_count,
             "enable_images": task_msg.enable_images,
+            # LLM 配置由 Java 端注入，透传到 LangGraph → Chain → create_chat_model()
+            "llm_config": {
+                "api_key": task_msg.api_key,
+                "base_url": task_msg.base_url,
+                "model_name": task_msg.model_name,
+            },
             "context": "",
             "chain_output": "",
             "parsed_outline": {},

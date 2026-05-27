@@ -31,12 +31,13 @@ async def _start_consumer_safe(consumer) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """应用生命周期回调：启动时初始化临时目录与 RabbitMQ 消费者，关闭时停止。"""
+    """应用生命周期回调：初始化临时目录、启动 RabbitMQ 消费者。"""
     global _consumer_instance
     logger.info(f"{settings.app_name} starting, env: {'debug' if settings.debug else 'production'}")
     ensure_temp_dir()
 
     # 启动 RabbitMQ 消费者（后台任务，不阻塞 HTTP 服务）
+    # 大语言模型凭证由 Java 端通过 RabbitMQ 消息注入，嵌入模型配置从 .env 读取
     from broker.consumer import GenerationConsumer
     _consumer_instance = GenerationConsumer()
     consumer_task = asyncio.create_task(

@@ -1,6 +1,14 @@
 # BirdHelp 内部接口调用指南
 
-> 本文档面向 AI 模块开发人员，说明如何对 BirdHelp Java 后端内部接口发起签名请求。
+> 本文档面向 **AI 模块（Python）开发人员**，说明如何对 BirdHelp Java 后端内部接口发起签名请求。
+>
+> **重要变更（2026-05-23）**：文档生成已从同步 HTTP 迁移至 RabbitMQ 异步。Python 端需：
+> 1. 实现 RabbitMQ 消费者（详见 `RABBITMQ_ASYNC_PROTOCOL.md`）
+> 2. 生成完成后调用 `POST /api/internal/task/callback`（替代旧的返回方式）
+> 3. 可选调用 `POST /api/internal/task/progress` 推送进度
+> 4. 旧的同步生成接口 `/ai/ppt|word|pdf/generate` 不再被 Java 调用，可移除
+>
+> 原有的额度接口（`/internal/quota/*`）和文件接口（`/internal/file/*`）**继续使用，无需改动**。
 
 ---
 
@@ -195,13 +203,16 @@ public class InternalApiCaller {
 
 ### 5.1 接口总览
 
-| 方法 | 路径 | Content-Type | 说明 |
-|------|------|-------------|------|
-| POST | `/api/internal/quota/consume` | `application/json` | 扣减额度（生成前调用） |
-| POST | `/api/internal/quota/refund` | `application/json` | 退还额度（生成失败调用） |
-| POST | `/api/internal/file/upload` | `multipart/form-data` | 上传文件（素材 / 生成结果） |
-| GET | `/api/internal/file/{id}/download` | — | 下载文件（向量化等处理用） |
-| DELETE | `/api/internal/file/{id}` | — | 软删除文件，移入回收站 |
+| 方法     | 路径                                 | Content-Type          | 说明                 |
+|--------|------------------------------------|-----------------------|--------------------|
+| POST   | `/api/internal/quota/consume`      | `application/json`    | 扣减额度（生成前调用）        |
+| POST   | `/api/internal/quota/refund`       | `application/json`    | 退还额度（生成失败调用）       |
+| POST   | `/api/internal/file/upload`        | `multipart/form-data` | 上传文件（素材 / 生成结果）    |
+| GET    | `/api/internal/file/{id}/download` | —                     | 下载文件（向量化等处理用）      |
+| DELETE | `/api/internal/file/{id}`          | —                     | 软删除文件，移入回收站        |
+| POST   | `/api/internal/task/callback`      | `application/json`    | 接收文档生成任务完成/失败回调    |
+| POST   | `/api/internal/task/progress`      | `application/json`    | 接收文档生成任务进度通知       |
+| POST   | `/api/internal/api-key/fetch`      | `application/json`    | 获取解密后的 LLM API Key |
 
 ### 5.2 通用签名工具函数
 
@@ -397,7 +408,99 @@ resp = signed_no_body_request("DELETE", "/api/internal/file/42?userId=1")
 
 成功：`{"code": 0, "message": "ok", "data": null}`
 
-### 5.5 快速调用汇总
+### 5.5 任务回调接口
+
+#### POST /api/internal/task/callback — 任务完成/失败回调
+
+> Python AI 模块生成完成后调用，通知 Java 后端任务结果。详细协议见 `RABBITMQ_ASYNC_PROTOCOL.md` 第四章。
+
+| 字段                 | 类型           | 必填 | 说明                          |
+|--------------------|--------------|----|-----------------------------|
+| `taskId`           | string       | 是  | 与消息体中的 taskId 完全一致          |
+| `callbackId`       | string       | 是  | 业务流水 ID                     |
+| `userId`           | long         | 是  | 用户 ID                       |
+| `projectId`        | long         | 是  | 项目 ID                       |
+| `status`           | string       | 是  | `"completed"` \| `"failed"` |
+| `fileId`           | long\|null   | 否  | 生成成功时的文件 ID                 |
+| `fileUrl`          | string\|null | 否  | 生成成功时的文件访问 URL              |
+| `fileName`         | string\|null | 否  | 生成的文件名（含扩展名）                |
+| `qaLowestScore`    | number\|null | 否  | QA 最低评分（0-100）              |
+| `qaPassedCount`    | number\|null | 否  | QA 通过的页数/章节数                |
+| `qaTotalCount`     | number\|null | 否  | QA 总评估页数/章节数                |
+| `generationTimeMs` | number       | 是  | 实际生成耗时（毫秒）                  |
+| `errorCode`        | number       | 是  | 错误码，成功为 `0`                 |
+| `errorMessage`     | string       | 是  | 错误描述，成功为空字符串                |
+
+```python
+# 任务完成
+resp = signed_json_request("POST", "/api/internal/task/callback", {
+    "taskId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "callbackId": "req_20260523_001",
+    "userId": 42,
+    "projectId": 100,
+    "status": "completed",
+    "fileId": 999,
+    "fileUrl": "https://cdn.example.com/files/report.pptx",
+    "fileName": "人工智能技术综述.pptx",
+    "qaLowestScore": 72,
+    "qaPassedCount": 14,
+    "qaTotalCount": 15,
+    "generationTimeMs": 45230,
+    "errorCode": 0,
+    "errorMessage": ""
+})
+
+# 任务失败
+resp = signed_json_request("POST", "/api/internal/task/callback", {
+    "taskId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "callbackId": "req_20260523_001",
+    "userId": 42,
+    "projectId": 100,
+    "status": "failed",
+    "fileId": None,
+    "fileUrl": None,
+    "fileName": None,
+    "qaLowestScore": None,
+    "qaPassedCount": None,
+    "qaTotalCount": None,
+    "generationTimeMs": 12500,
+    "errorCode": 5002,
+    "errorMessage": "大纲验证失败：缺少主标题字段"
+})
+```
+
+成功响应：`{"code": 0, "message": "ok", "data": null}`
+
+#### POST /api/internal/task/progress — 任务进度通知（可选）
+
+> 生成过程中周期性推送进度，改善用户体验。
+
+| 字段           | 类型     | 必填 | 说明                |
+|--------------|--------|----|-------------------|
+| `taskId`     | string | 是  | 任务 ID             |
+| `callbackId` | string | 是  | 业务流水 ID           |
+| `status`     | string | 是  | 固定 `"processing"` |
+| `stage`      | string | 是  | 阶段枚举，见下方          |
+| `progress`   | number | 是  | 进度百分比，0-100 整数    |
+| `message`    | string | 否  | 可读状态描述            |
+
+**阶段枚举：** `retrieving_context` \| `generating_outline` \| `validating_outline` \| `rendering_charts` \|
+`fetching_images` \| `running_qa` \| `building_document` \| `uploading_file`
+
+```python
+resp = signed_json_request("POST", "/api/internal/task/progress", {
+    "taskId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "callbackId": "req_20260523_001",
+    "status": "processing",
+    "stage": "running_qa",
+    "progress": 65,
+    "message": "正在质量评审：第 10/15 页"
+})
+```
+
+成功响应：`{"code": 0, "message": "ok", "data": null}`
+
+### 5.6 快速调用汇总
 
 ```python
 # 额度
@@ -415,7 +518,72 @@ signed_no_body_request("GET", "/api/internal/file/42/download")
 
 # 文件删除
 signed_no_body_request("DELETE", "/api/internal/file/42?userId=1")
+
+# 任务完成回调
+signed_json_request("POST", "/api/internal/task/callback", {
+    "taskId": "...", "callbackId": "...", "userId": 42, "projectId": 100,
+    "status": "completed", "fileId": 999, "fileUrl": "...", "fileName": "...",
+    "qaLowestScore": 72, "qaPassedCount": 14, "qaTotalCount": 15,
+    "generationTimeMs": 45230, "errorCode": 0, "errorMessage": ""
+})
+
+# 任务进度通知
+signed_json_request("POST", "/api/internal/task/progress", {
+    "taskId": "...", "callbackId": "...", "status": "processing",
+    "stage": "running_qa", "progress": 65, "message": "正在质量评审：第 10/15 页"
+})
+
+# 获取 LLM API Key
+signed_json_request("POST", "/api/internal/api-key/fetch", {})
+signed_json_request("POST", "/api/internal/api-key/fetch?providerName=openai", {})
 ```
+
+### 5.6 API Key 获取接口
+
+#### POST /api/internal/api-key/fetch — 获取解密后的 LLM API Key
+
+> Python AI 模块在启动时初始化 embedding 模型时调用，获取解密的 API Key 和 Base URL。文档生成时的聊天模型凭证已通过 RabbitMQ 消息传递，不再需要此接口。
+
+| 参数           | 位置    | 类型     | 必填 | 说明                                   |
+|--------------|-------|--------|----|--------------------------------------|
+| providerName | query | string | 否  | 供应商名称过滤（`openai`、`qwen` 等）           |
+
+> **注意**：`modelType` 参数已移除，所有存储的密钥均为聊天模型。
+
+Body 固定为空 `{}`。
+
+```python
+# 获取所有启用的 Key
+resp = signed_json_request("POST", "/api/internal/api-key/fetch", {})
+
+# 按供应商过滤
+resp = signed_json_request("POST", "/api/internal/api-key/fetch?providerName=openai", {})
+```
+
+成功响应：
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": [
+    {
+      "providerName": "openai",
+      "apiKey": "sk-proj-xxxxxxxxxxxxxxxxxxxx",
+      "baseUrl": "https://api.openai.com/v1",
+      "modelName": "gpt-4o"
+    },
+    {
+      "providerName": "openai",
+      "apiKey": "sk-proj-xxxxxxxxxxxxxxxxxxxx",
+      "baseUrl": "https://api.openai.com/v1",
+      "modelName": "text-embedding-3-small"
+    }
+  ]
+}
+```
+
+> 详细集成方案见 `PYTHON_API_KEY_INTEGRATION.md`。
 
 ---
 

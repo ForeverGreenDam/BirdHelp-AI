@@ -1,5 +1,10 @@
-"""ChatModel 工厂，统一创建 LLM 客户端实例。"""
+"""ChatModel 工厂，统一创建 LLM 客户端实例。
 
+Java 端通过 RabbitMQ 消息注入 api_key / base_url / model_name，
+          经 LangGraph → contextvars 透传到本模块。
+"""
+
+import contextvars
 from typing import Any
 
 from langchain_openai import ChatOpenAI
@@ -7,6 +12,26 @@ from langchain.callbacks.base import BaseCallbackHandler
 from loguru import logger
 
 from config import settings
+
+# 异步上下文安全的 LLM 配置传递通道
+# generation_graph 在节点入口调用 set_llm_config()，后续 create_chat_model() 自动读取
+_llm_config_ctx: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "llm_config", default=None
+)
+
+
+def set_llm_config(config: dict) -> None:
+    """设置当前异步上下文的 LLM 配置（由 generation_graph 节点入口调用）。
+
+    config 应包含: {"api_key": str, "base_url": str, "model_name": str}
+    """
+    _llm_config_ctx.set(config)
+
+
+def _get_llm_config() -> dict:
+    """获取当前上下文的 LLM 配置，未设置时返回空 dict。"""
+    return _llm_config_ctx.get() or {}
+
 
 # 用于区分不同 LLM 调用的计数器
 _call_counter: int = 0
@@ -64,15 +89,25 @@ class _LlmLoggingHandler(BaseCallbackHandler):
 
 
 def create_chat_model() -> ChatOpenAI:
-    """基于全局配置创建 ChatOpenAI 实例。
+    """基于上下文配置创建 ChatOpenAI 实例。
+
+    优先级：
+    1. Java 端通过 RabbitMQ 消息注入的 LLM 配置（经 contextvars 传递）
+    2. .env 兜底配置
 
     兼容 DeepSeek/通义千问/GPT-4o 等 OpenAI 兼容 API。
     内置 LLM 日志回调，记录每次调用的 prompt 与响应。
     """
+    ctx_cfg = _get_llm_config()  # 始终为 dict（未设置时为 {}）
+    # 逐字段降级：key 不存在或为空字符串时自动落到 .env
+    model = ctx_cfg.get("model_name") or settings.llm_model
+    api_key = ctx_cfg.get("api_key") or settings.llm_api_key
+    base_url = ctx_cfg.get("base_url") or settings.llm_base_url
+
     return ChatOpenAI(
-        model=settings.llm_model,
-        api_key=settings.llm_api_key,
-        base_url=settings.llm_base_url,
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
         temperature=settings.llm_temperature,
         max_retries=settings.llm_max_retries,
         timeout=settings.llm_timeout,
