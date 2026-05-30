@@ -1,8 +1,35 @@
 # BirdHelp AI 🐦
 
+> ⚠️ **分支：`agent-refactor`** — 此分支与 `master` 有重大架构差异，详见下方对比。
+
 **大学生文档助手 — AI 能力层**
 
-基于 FastAPI + LangChain + LangGraph 的智能文档生成服务，支持 PPT / Word / PDF 的全自动生成，集成 RAG（检索增强生成）混合检索。通过内部 HTTP 协议与 Java 后端协作，提供 RSA-SHA256 双向签名认证。
+基于 FastAPI + LangChain + LangGraph ReAct Agent 的智能文档生成服务，支持 PPT / Word / PDF 的全自动生成。采用 Agent 自主编排模式（检索→生成→图表→配图→QA→构建），集成 RAG（检索增强生成）混合检索。通过 RabbitMQ 异步消息队列与 Java 后端协作，提供 RSA-SHA256 双向签名认证。
+
+---
+
+## 🔀 与 `master` 分支的差异
+
+| 维度 | `master`（Workflow） | `agent-refactor`（Agent） |
+|---|---|---|
+| **编排方式** | LangGraph StateGraph 固定流水线 | LangGraph ReAct Agent 自主编排 |
+| **执行顺序** | 代码硬编码（代码决定每一步） | LLM 自主决定工具调用顺序 |
+| **重试策略** | 固定上限 3 次 | LLM 自行判断是否需要重试 |
+| **步骤跳过** | 代码 if/else 判断 | LLM 根据任务自主跳过 |
+| **核心模块** | `graph/generation_graph.py` | `graph/agent.py` |
+| **消费者** | 调用固定 Graph 的 `ainvoke` | 调用 Agent 的 `orchestrator.run` |
+| **进度推送** | 按 Graph 节点 | 按 Agent 工具调用 |
+
+**关键代码变更：**
+
+```
+graph/generation_graph.py   →  graph/agent.py        (新建，ReAct Agent)
+broker/consumer.py          →  broker/consumer.py    (修改，_run_generation 改用 Agent)
+```
+
+**Agent 的 6 个工具：** `retrieve_knowledge` `generate_outline` `render_charts` `fetch_images` `evaluate_quality` `build_document`
+
+---
 
 ---
 
@@ -23,7 +50,7 @@
 | 领域 | 技术 |
 |------|------|
 | Web 框架 | FastAPI + Uvicorn |
-| AI 编排 | LangChain + LangGraph |
+| AI 编排 | LangChain + LangGraph (ReAct Agent) |
 | LLM 接入 | langchain-openai (兼容 OpenAI / DeepSeek / 通义千问) |
 | 嵌入模型 | OpenAI Embeddings / 通义 text-embedding-v4 |
 | 向量数据库 | Redis Stack |
@@ -58,8 +85,8 @@ BirdHelp/
 │   ├── word_chain.py        # Word 内容生成 Chain
 │   └── pdf_chain.py         # PDF 内容生成 Chain
 │
-├── graph/                   # LangGraph 状态图
-│   └── generation_graph.py  # 文档生成工作流 (RAG → Chain → 校验 → 重试 → 构建)
+├── graph/                   # Agent 编排层
+│   └── agent.py             # ReAct Agent — 自主编排文档生成全流程
 │
 ├── rag/                     # RAG 管线
 │   ├── ingestion.py         # 文档解析、切片、向量化入库
@@ -207,29 +234,35 @@ POST /ai/word/generate
    │
    ▼
 Java 后端 (认证/路由/额度)
-   │ RSA-SHA256 签名
+   │ RabbitMQ 消息
    ▼
-FastAPI 路由层 (/ai/*)
+broker/consumer.py (消费任务)
    │
    ▼
-LangGraph 状态图
-   ├─→ RAG 检索 (可选, 向量 + BM25 + RRF)
-   ├─→ LangChain Chain (Prompt + LLM + OutputParser)
-   ├─→ 校验与重试 (最多 3 次)
-   └─→ 文件生成器 (python-pptx / python-docx / LibreOffice)
+ReAct Agent (graph/agent.py)  ← LLM 自主决策工具调用序列
+   ├─→ [tool] retrieve_knowledge   — RAG 混合检索（可选）
+   ├─→ [tool] generate_outline     — LLM 生成结构化大纲
+   ├─→ [tool] render_charts        — matplotlib 图表渲染（Word/PDF）
+   ├─→ [tool] fetch_images         — Unsplash/Pexels 图片搜索
+   ├─→ [tool] evaluate_quality     — 多维度 QA 评分 + 自动修复
+   └─→ [tool] build_document       — 构建 Office 文件
    │
    ▼
-上传文件至 Java 后端 → 返回用户
+上传文件至 Java 后端 → HTTP 回调通知 → 返回用户
 ```
 
-### 生成流程
+### Agent 生成流程
+
+与传统的固定 Workflow 不同，Agent 模式下的生成流程由 LLM 自主决策：
 
 1. **额度扣减** — 调用 Java 后端扣减用户额度
-2. **RAG 检索**（可选）— 如用户有上传素材，从 Redis 检索相关内容注入 Prompt
-3. **LLM 生成** — LangChain Chain 调用大模型生成结构化内容
-4. **内容校验** — 验证 JSON 结构完整性，失败自动重试（最多 3 次）
-5. **文件构建** — 调用对应生成器（python-pptx / python-docx）生成 Office 文件
-6. **上传交付** — 文件上传至 Java 文件存储，失败自动退款
+2. **Agent 自主编排** — ReAct Agent 根据任务自主决定工具调用顺序：
+   - 可跳过不需要的步骤（如纯文本文档跳过图表渲染）
+   - 质量不达标时可自主重试（重新生成大纲、再次 QA）
+   - 根据中间结果动态调整策略
+3. **文件构建** — Agent 最终调用 build_document 工具生成 Office 文件
+4. **上传交付** — 文件上传至 Java 文件存储，HTTP 回调通知 Java 端
+5. **失败退款** — 生成失败自动退还额度
 
 ---
 
@@ -237,11 +270,11 @@ LangGraph 状态图
 
 - [x] **Phase 1** — 基础设施：FastAPI 骨架、LLM/Embedding 工厂、Java 客户端、RSA 认证
 - [x] **Phase 2** — RAG 管线：素材上传解析、向量化、混合检索
-- [x] **Phase 3** — 文档生成：PPT / Word / PDF 全自动生成
+- [x] **Phase 3** — 文档生成：PPT / Word / PDF 全自动生成（Workflow → Agent 重构完成）
+- [x] **Phase 7** — 异步任务：RabbitMQ 任务队列解耦
 - [ ] **Phase 4** — 对话修改：多轮对话式文档编辑
 - [ ] **Phase 5** — 投产准备：集成测试、错误覆盖、性能优化
 - [ ] **Phase 6** — OCR 集成：PaddleOCR 图片/扫描件识别
-- [ ] **Phase 7** — 异步任务：RabbitMQ 任务队列解耦
 
 ---
 
@@ -251,4 +284,4 @@ MIT License
 
 ---
 
-> Built with FastAPI · LangChain · LangGraph · Redis Stack · python-pptx · python-docx
+> Built with FastAPI · LangChain · LangGraph (ReAct Agent) · Redis Stack · python-pptx · python-docx

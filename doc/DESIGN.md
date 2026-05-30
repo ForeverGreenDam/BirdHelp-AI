@@ -1,6 +1,6 @@
 # BirdHelp AI 模块设计文档
 
-> v4.4 | 2026-05-28 | API Key 架构升级：聊天模型凭证由 Java 端通过 RabbitMQ 消息注入；嵌入模型凭证从 .env 读取
+> v5.0 | 2026-05-30 | Agent 架构重构：从固定 Workflow 升级为 ReAct Agent 自主编排；LLM 自主决定工具调用顺序与重试策略
 
 ---
 
@@ -23,7 +23,7 @@ Java 后端（已建成）              Python AI 模块（本项目）
 | 领域 | 技术 | 选型理由 |
 |------|------|----------|
 | Web 框架 | FastAPI | 异步原生、生态成熟、与 Java 后端 httpx 统一 |
-| AI 框架 | LangChain + LangGraph | 统一的 RAG / Chain / 状态图编排 |
+| AI 框架 | LangChain + LangGraph (ReAct Agent) | 统一的 RAG / Chain / Agent 编排 |
 | 大模型接入 | langchain-openai (ChatOpenAI) | OpenAI 兼容协议，同时对接 DeepSeek / 通义千问 / GPT-4o |
 | 嵌入模型 | text-embedding-3-small 或通义 text-embedding-v4 | 中文语义效果稳定，1536 维性价比高 |
 | 向量数据库 | Redis Stack | 低延迟向量检索 + 用户索引隔离 + 已有机房 Redis 实例 |
@@ -67,9 +67,9 @@ BirdHelp/
 │   ├── pdf_chain.py        # ✅ PdfChain（图表+插图+表格增强 Prompt）
 │   └── chat_chain.py       # ⬜ 对话修改 Chain
 │
-├── graph/                  # LangGraph 工作流（✅ generation_graph 已实现）
-│   ├── generation_graph.py # ✅ 文档生成状态图 (RAG→Chain→校验→重试→构建)
-│   └── chat_graph.py       # ⬜ 对话修改状态图
+├── graph/                  # Agent 编排层（✅ 已完成）
+│   ├── agent.py            # ✅ ReAct Agent — 自主编排文档生成全流程
+│   └── chat_graph.py       # ⬜ 对话修改 Agent
 │
 ├── rag/                    # RAG 管线（✅ 已实现）
 │   ├── ingestion.py        # ✅ 文档下载→解析→切分→嵌入→入库
@@ -282,9 +282,9 @@ _load_docx 提取段落文字
 
 ## 六、核心流程
 
-### 6.1 文档生成（RabbitMQ 异步消费）
+### 6.1 文档生成（Agent 自主编排 + RabbitMQ 异步消费）
 
-文档生成已全面异步化：Java 后端将任务发布到 RabbitMQ，Python broker 模块消费执行。
+文档生成已全面 Agent 化：Java 后端将任务发布到 RabbitMQ，Python broker 模块消费后交给 ReAct Agent 自主编排执行。
 
 ```
 Java 后端                              Python AI 模块
@@ -295,8 +295,12 @@ Java 后端                              Python AI 模块
   → 返回 {taskId, status:pending}
                                      ├─ ① 解析校验消息 (version/docType/字段)
                                      ├─ ② 调用 Java 扣减额度 (quota.consume)
-                                     ├─ ③ LangGraph 状态图执行
-                                     │     RAG 检索(可选) → Chain → LLM → JSON → QA
+                                     ├─ ③ ReAct Agent 自主编排
+                                     │     LLM 决定工具调用顺序：
+                                     │     retrieve_knowledge → generate_outline
+                                     │     → render_charts → fetch_images
+                                     │     → evaluate_quality → build_document
+                                     │     （可跳过/重试任意步骤）
                                      ├─ ④ 文件生成 (PPT/Word/PDF generator)
                                      ├─ ⑤ 上传文件到 Java (file.upload)
                                      ├─ ⑥ HTTP 回调通知 (task.callback)
@@ -304,6 +308,16 @@ Java 后端                              Python AI 模块
 
 Java 收到回调 → 更新任务状态 → 前端轮询获得结果
 ```
+
+**Agent vs 旧 Workflow 对比：**
+
+| | 旧 Workflow (generation_graph.py) | 新 Agent (graph/agent.py) |
+|---|---|---|
+| 工具调用顺序 | 代码硬编码 (START→retrieve→generate→...) | LLM 自主决定 |
+| 重试策略 | 固定 3 次上限 | LLM 自行判断是否需要重试 |
+| 跳过步骤 | 代码条件判断 (if doc_type == "ppt": skip) | LLM 根据任务自主跳过 |
+| 质量把控 | 代码检查 + LLM QA | LLM 全面评估 |
+| 可观测性 | 固定节点状态 | 工具级回调 + 消息历史 |
 
 > 完整消息协议、ACK/NACK 规则、回调格式见 `doc/RABBITMQ_ASYNC_PROTOCOL.md`。
 

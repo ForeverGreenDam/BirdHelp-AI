@@ -26,14 +26,14 @@ pip install -r requirements.txt
 **分层结构** (详见 DESIGN.md 第三章):
 - `api/` — FastAPI 路由层，对外暴露 `/ai/*` 接口，由 Java 后端代理转发
 - `chains/` — LangChain Chain 定义（ppt_chain / word_chain / pdf_chain / chat_chain），封装 Prompt + LLM + OutputParser
-- `graph/` — LangGraph 状态图（generation_graph: RAG→生成→检查→重试；chat_graph: 对话修改）
+- `graph/` — Agent 编排层（agent.py: ReAct Agent 自主编排；generation_graph.py: 旧固定工作流，保留参考）
 - `rag/` — RAG 管线（ingestion → retrieval → vector_store）
 - `generator/` — Office 文件生成：PPT（python-pptx + 设计系统 + 11种布局 + 7套场景profile + 图表/表格）、Word/PDF（python-docx + DocxBuilder + matplotlib 图表 + LibreOffice）
-- `broker/` — RabbitMQ 消费者（消费文档生成任务 → 执行生成 → HTTP 回调通知 Java）
+- `broker/` — RabbitMQ 消费者（消费文档生成任务 → Agent 编排 → HTTP 回调通知 Java）
 - `client/` — 调用 Java 后端内部接口（quota / file / task callback）
 - `core/` — 基础设施（ChatModel 工厂、Embedding 工厂、Schemas、异常）
 
-**核心流程**: Java → RabbitMQ → broker 消费 → LangGraph 状态图 → RAG 检索(可选) → LangChain Chain → LLM 生成 → 文件生成器 → 上传 Java 后端 → HTTP 回调通知结果
+**核心流程**: Java → RabbitMQ → broker 消费 → ReAct Agent 自主编排 (retrieve→generate→charts→images→QA→build) → 文件生成器 → 上传 Java 后端 → HTTP 回调通知结果
 
 **RAG 管线**: 文件上传 → LangChain Loader 解析 → 清洗 → RecursiveCharacterTextSplitter → Embedding → Redis Stack → 生成时混合检索 (向量+BM25+RRF) → 注入 Prompt
 
@@ -66,14 +66,14 @@ pip install -r requirements.txt
 | `POST /ai/ocr/recognize` | OCR 识别（Phase 4） |
 | `GET /ai/task/{task_id}/status` | 任务状态查询（Phase 7） |
 
-> **文档生成已异步化**：Java 后端通过 RabbitMQ 发送生成任务，Python broker 模块消费执行，完成后 HTTP 回调。旧 HTTP 生成接口已移除（详见 `doc/RABBITMQ_ASYNC_PROTOCOL.md`）。
+> **文档生成已 Agent 化**：Java 后端通过 RabbitMQ 发送生成任务，Python broker 模块消费后交给 ReAct Agent（`graph/agent.py`）自主编排执行，完成后 HTTP 回调。旧 HTTP 生成接口已移除，旧固定 Workflow（`graph/generation_graph.py`）保留做参考。详见 `doc/RABBITMQ_ASYNC_PROTOCOL.md`。
 
 > 两个方向使用**独立的**密钥对，不可混用。AI 模块对外暴露的接口由 Java 后端代理转发给前端，AI 模块不直接面向用户。
 
 ## Key Tech Stack
 
 - **FastAPI** + Uvicorn (Web)
-- **LangChain** + **LangGraph** (LLM 编排、RAG、工作流)
+- **LangChain** + **LangGraph** (LLM 编排、RAG、ReAct Agent)
 - **langchain-openai** (ChatOpenAI 兼容协议，对接 DeepSeek/通义千问/GPT-4o)
 - **Redis Stack** 向量数据库
 - **python-pptx** / **python-docx** / **LibreOffice** (文件生成)

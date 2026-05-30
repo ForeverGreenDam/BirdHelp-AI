@@ -1,6 +1,6 @@
 """RabbitMQ 消费者 — 异步消费文档生成任务。
 
-启动后连接 RabbitMQ，声明拓扑，逐条消费消息并执行生成流水线。
+启动后连接 RabbitMQ，声明拓扑，逐条消费消息后交给 ReAct Agent 自主编排生成流程。
 ACK/NACK / 重试 / 进度通知均按 RABBITMQ_ASYNC_PROTOCOL.md v1.0 执行。
 """
 
@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any
 
 import aio_pika
-from langchain_core.callbacks import AsyncCallbackHandler
 from loguru import logger
 
 from config import settings
@@ -276,41 +275,17 @@ class GenerationConsumer:
 
     # ── 生成 ──
 
-    # LangGraph 节点名 → (stage, progress, message)
-    _NODE_PROGRESS = {
-        "retrieve_context": ("retrieving_context", 5, "正在检索参考资料..."),
-        "generate_outline": ("generating_outline", 25, "正在生成文档大纲..."),
-        "validate_outline": ("validating_outline", 40, "正在验证大纲结构..."),
-        "render_charts": ("rendering_charts", 55, "正在渲染图表..."),
-        "fetch_images": ("fetching_images", 70, "正在搜索配图..."),
-        "run_qa": ("running_qa", 85, "正在质量评审..."),
-        "build_document": ("building_document", 95, "正在构建文档文件..."),
-    }
-
-    class _ProgressCallback(AsyncCallbackHandler):
-        """LangGraph 节点回调：在节点 START 时推送进度，而非结束后。"""
-
-        def __init__(self, task_msg: TaskMessage, sender):
-            self._task_msg = task_msg
-            self._sender = sender
-
-        async def on_chain_start(
-            self, serialized: dict, inputs: dict, **kwargs: Any,
-        ) -> None:
-            name = serialized.get("name", "") if isinstance(serialized, dict) else ""
-            if name in GenerationConsumer._NODE_PROGRESS:
-                stage, pct, msg = GenerationConsumer._NODE_PROGRESS[name]
-                await self._sender(self._task_msg, stage, pct, msg)
-
     async def _run_generation(
         self, task_msg: TaskMessage, message: aio_pika.IncomingMessage,
     ) -> tuple[str, dict[str, Any]]:
-        """执行 LangGraph 生成流水线，节点开始时推送进度。返回 (file_path, graph_result)。
+        """执行 Agent 驱动的文档生成。Agent 通过 ReAct 模式自主编排工具调用。
 
-        通过 LangChain callback 机制在 on_chain_start 时回调推送进度，
-        而非 astream 的节点结束后，确保前端看到阶段名称时该阶段正处于执行中。
+        使用 graph.agent.AgentOrchestrator（ReAct Agent）替代原有的固定 StateGraph：
+        Agent 拥有 6 个工具（retrieve_knowledge / generate_outline / render_charts /
+        fetch_images / evaluate_quality / build_document），自主决定调用顺序和重试。
+        进度通过 AgentProgressCallback 在工具调用开始时推送。
         """
-        from graph.generation_graph import get_generation_graph
+        from graph.agent import get_agent_orchestrator
         from utils.file import ensure_temp_dir
 
         ensure_temp_dir()
@@ -329,28 +304,19 @@ class GenerationConsumer:
             "slide_count": task_msg.slide_count,
             "word_count": task_msg.word_count,
             "enable_images": task_msg.enable_images,
-            # LLM 配置由 Java 端注入，透传到 LangGraph → Chain → create_chat_model()
+            # LLM 配置由 Java 端注入，透传到 Agent → Tools → Chain → create_chat_model()
             "llm_config": {
                 "api_key": task_msg.api_key,
                 "base_url": task_msg.base_url,
                 "model_name": task_msg.model_name,
             },
-            "context": "",
-            "chain_output": "",
-            "parsed_outline": {},
-            "images_map": {},
-            "qa_reports": [],
-            "attempt": 0,
-            "file_path": "",
-            "error": "",
         }
 
-        progress_cb = self._ProgressCallback(task_msg, self._send_progress)
         try:
-            graph = get_generation_graph()
-            graph_result = await graph.ainvoke(
-                state, config={"callbacks": [progress_cb]},
+            orchestrator = get_agent_orchestrator(
+                progress_sender=self._send_progress,
             )
+            graph_result = await orchestrator.run(state, task_msg=task_msg)
         except Exception as exc:
             raise _map_exception(exc)
 

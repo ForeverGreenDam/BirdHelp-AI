@@ -1,33 +1,34 @@
 # Word 文档生成设计
 
-> v2.0 | 2026-05-22 | Phase 3 增强版（图表嵌入 + 图片 + QA）
+> v3.0 | 2026-05-30 | Agent 架构重构：从固定 StateGraph 升级为 ReAct Agent 自主编排
 
 ---
 
 ## 一、概述
 
-Word 生成采用增强型流程：LLM 生成含图表/插图/表格描述的结构化 JSON → DocxBuilder 渲染为 .docx。
+Word 生成采用 Agent 自主编排模式：LLM 驱动的 ReAct Agent 拥有 6 个工具，自主决定调用顺序与重试策略。LLM 生成含图表/插图/表格描述的结构化 JSON → DocxBuilder 渲染为 .docx。
 
-与 PPT/PDF 共享同一套 LangGraph 状态图架构和公共 ColorPalette 设计系统。
+与 PPT/PDF 共享同一套 Agent 编排架构和公共 ColorPalette 设计系统。
 
 ---
 
 ## 二、核心流程
 
 ```
-POST /ai/word/generate
-  → quota.consume（扣额度）
-  → LangGraph 状态图:
-      ├─ retrieve_context（RAG 检索，可选）
-      ├─ generate_outline（WordChain → LLM → JSON 解析）
-      ├─ validate_outline（校验 title + sections ≥ 1）
-      ├─ render_charts（matplotlib 渲染图表为 PNG）
-      ├─ fetch_images（Unsplash → Pexels → 占位图）
-      ├─ run_qa（DocQAChain 评分 + 修复循环 ≤2 轮）
-      ├─ build_document（DocxBuilder → .docx）
-      └─ handle_error（失败重试 ≤3 次）
+Java 后端 → RabbitMQ (doc.generate.word)
+  → broker/consumer.py 消费
+  → graph/agent.py ReAct Agent 自主编排:
+      ├─ [工具] retrieve_knowledge → RAG 检索（可选）
+      ├─ [工具] generate_outline   → WordChain → LLM → JSON
+      ├─ [工具] render_charts      → matplotlib 渲染图表为 PNG
+      ├─ [工具] fetch_images       → Unsplash → Pexels → 占位图
+      ├─ [工具] evaluate_quality   → DocQAChain 评分 + 修复
+      └─ [工具] build_document     → DocxBuilder → .docx
   → file.upload（上传 Java 后端）
-  → 失败时 quota.refund（退额度）
+  → HTTP 回调通知 Java 端
+
+Agent 自主权：可跳过不需要的步骤；质量不达标时可反复重试；
+始终以 build_document 作为最后一步。
 ```
 
 ---
@@ -105,13 +106,13 @@ POST /ai/word/generate
 ```mermaid
 sequenceDiagram
     autonumber
-    participant G as Graph._generate_outline
+    participant A as Agent.generate_outline
     participant WC as WordChain
     participant PT as ChatPromptTemplate
     participant LLM as ChatOpenAI
     participant P as StrOutputParser
 
-    G->>WC: chain.ainvoke(inputs)
+    A->>WC: chain.ainvoke(inputs)
     Note over WC: inputs: topic, doc_type,<br/>word_count, style, language,<br/>enable_images, context, extra_prompt
 
     WC->>PT: 构建 SYSTEM_PROMPT + HUMAN_TEMPLATE
@@ -130,7 +131,7 @@ sequenceDiagram
         WC->>WC: 规范化: 确保 sections/tables/references 存在
         WC-->>G: {parsed_outline dict}
     else JSON 解析失败
-        WC-->>G: 抛出异常 → Graph 重试 ≤3 次
+        WC-->>G: 抛出异常 → Agent 自主决定重试 ≤3 次
     end
 ```
 
@@ -139,11 +140,11 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     autonumber
-    participant G as Graph._run_qa
+    participant A as Agent.evaluate_quality
     participant QA as DocQAChain
     participant LLM as ChatOpenAI
 
-    G->>QA: evaluate_with_repair(outline, doc_type,<br/>word_count, style, threshold=70, max_rounds=3)
+    A->>QA: evaluate_with_repair(outline, doc_type,<br/>word_count, style, threshold=70, max_rounds=3)
 
     loop 每轮修复 (≤3轮)
         QA->>LLM: 评估文档质量 (8个维度)
@@ -220,109 +221,66 @@ Word/PDF 文档质量评估，检查维度：
 
 ---
 
-## 五、状态图集成
+## 五、Agent 编排
 
-`graph/generation_graph.py` 通过 `state["doc_type"] == "word"` 分发。
+v3.0 起，Word 生成由 `graph/agent.py` 中的 ReAct Agent 自主编排。
 
-### 5.1 Word/PDF 状态流转图
+### 5.1 Agent 工具
 
-```mermaid
-stateDiagram-v2
-    direction LR
+| 工具 | 对应模块 | Word 中的职责 |
+|------|---------|-------------|
+| `retrieve_knowledge` | `rag/retrieval.py` | RAG 检索（可选） |
+| `generate_outline` | `chains/word_chain.py` | WordChain 生成结构化大纲 |
+| `render_charts` | `generator/_chart_engine.py` | matplotlib 渲染图表 PNG |
+| `fetch_images` | `generator/ppt/image_provider.py` | Unsplash→Pexels→占位图 |
+| `evaluate_quality` | `chains/word_qa_chain.py` | DocQAChain 评分 + 修复 |
+| `build_document` | `generator/word/generator.py` | DocxBuilder → .docx |
 
-    [*] --> retrieve_context: START
-    retrieve_context --> generate_outline: context ready
-    generate_outline --> validate_outline: raw JSON
-    validate_outline --> render_charts: 校验通过
-    validate_outline --> generate_outline: attempt < 3 重试
-    validate_outline --> handle_error: attempt ≥ 3 失败
-
-    render_charts --> fetch_images: 图表PNG就绪
-    fetch_images --> run_qa: 图片就绪
-    run_qa --> build_document: QA通过/降级
-    build_document --> [*]: .docx 生成完成
-
-    handle_error --> [*]: 错误退出
-```
-
-### 5.2 Chain-Graph-Generator 关联图
+### 5.2 Agent-Chain-Generator 关联
 
 ```mermaid
 graph TB
-    subgraph Graph["LangGraph 状态图 (generation_graph.py)"]
-        direction LR
-        N1[retrieve_context]
-        N2[generate_outline]
-        N3[validate_outline]
-        N4[render_charts]
-        N5[fetch_images]
-        N6[run_qa]
-        N7[build_document]
-        N8[handle_error]
-
-        N1 --> N2
-        N2 --> N3
-        N3 -->|通过| N4
-        N3 -->|重试| N2
-        N3 -->|失败| N8
-        N4 --> N5
-        N5 --> N6
-        N6 --> N7
+    subgraph Agent["ReAct Agent (graph/agent.py)"]
+        T1[retrieve_knowledge]
+        T2[generate_outline]
+        T3[render_charts]
+        T4[fetch_images]
+        T5[evaluate_quality]
+        T6[build_document]
     end
 
     subgraph Chains["LangChain Chains"]
-        WC[WordChain<br/>chains/word_chain.py]
-        QA[DocQAChain<br/>chains/word_qa_chain.py]
+        WC[WordChain]
+        QA[DocQAChain]
     end
 
     subgraph Generator["生成器层"]
-        CE[ChartEngine<br/>generator/_chart_engine.py]
-        DB[DocxBuilder<br/>generator/_docx_builder.py]
-        WG[WordGenerator<br/>generator/word/generator.py]
+        CE[ChartEngine]
+        DB[DocxBuilder]
+        WG[WordGenerator]
     end
 
     subgraph External["外部服务"]
         RAG[(RAG 向量库)]
-        LLM[(ChatOpenAI LLM)]
-        UP[Unsplash/Pexels API]
-        JAVA[Java 后端存储]
+        LLM[(ChatOpenAI)]
+        UP[Unsplash/Pexels]
+        JAVA[Java 后端]
     end
 
-    N1 -.->|检索| RAG
-    N2 ==>|调用 chain.ainvoke| WC
-    WC ==>|LLM 调用| LLM
-    N4 ==>|render_chart| CE
-    N5 -.->|搜索下载| UP
-    N6 ==>|调QA评估| QA
-    QA ==>|LLM 调用| LLM
-    N7 ==>|generate| WG
-    WG ==>|构建文档| DB
-    N7 -.->|上传| JAVA
+    T1 -.->|检索| RAG
+    T2 ==>|ainvoke| WC
+    WC ==>|LLM| LLM
+    T3 ==>|渲染| CE
+    T4 -.->|搜索| UP
+    T5 ==>|评估| QA
+    QA ==>|LLM| LLM
+    T6 ==>|构建| WG
+    WG ==>|DocxBuilder| DB
+    T6 -.->|上传| JAVA
 ```
-
-**关联说明：**
-
-| 图节点 | 调用的模块 | 数据流向 |
-|--------|-----------|---------|
-| `generate_outline` | `WordChain.chain.ainvoke()` | topic → LLM → raw JSON → safe_json_parse |
-| `render_charts` | `ChartEngine.render_chart()` | chart_spec → matplotlib → PNG 文件 |
-| `fetch_images` | Unsplash / Pexels API | image_query → 搜索 → 下载 → 本地路径 |
-| `run_qa` | `DocQAChain.evaluate_with_repair()` | outline → LLM 评估 → 修复后大纲 |
-| `build_document` | `WordGenerator.generate()` | outline + images_map → DocxBuilder → .docx |
 
 ---
 
 ## 六、API 接口
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| POST | `/ai/word/generate` | 同步生成 Word 文档（30–90 秒） |
-
-请求体 (`WordGenerateRequest`)：
-
-| 字段 | 类型 | 必填 | 默认值 | 说明 |
-|------|------|------|--------|------|
-| doc_type | str | 否 | essay | essay / report / letter / paper |
-| word_count | int | 否 | 2000 | 目标字数，500–10000 |
-| style | str | 否 | academic | academic / business / creative / minimal / tech / warm |
-| enable_images | bool | 否 | true | 是否自动搜索配图 |
+> **注意：** HTTP 同步接口（`POST /ai/word/generate`）已废弃。生产环境通过 RabbitMQ 异步消息队列触发生成，Java 后端发送消息到 `doc.generate.word` 路由键。

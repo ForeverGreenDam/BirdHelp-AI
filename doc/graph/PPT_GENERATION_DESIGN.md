@@ -1,63 +1,66 @@
 # PPT 生成功能设计文档
 
-> v2.2 | 2026-05-26 | Phase 3 增强版（设计系统 + 14 种布局 + 图片 + QA + 场景 profiles + 图表/表格）
+> v3.0 | 2026-05-30 | Agent 架构重构：从固定 StateGraph 升级为 ReAct Agent 自主编排
 
 ---
 
 ## 一、整体架构
 
 ```
-POST /ai/ppt/generate (PptGenerateRequest)
+Java 后端 → RabbitMQ 消息
   │
   ▼
-api/ppt.py              ← FastAPI 路由，参数由 Pydantic 校验
+broker/consumer.py        ← 消费任务：解析 → 额度扣减 → 执行 → 回调
   │
   ▼
-services/generation.py  ← 业务编排：扣额度 → 调图 → 上传 / 退款
+graph/agent.py            ← ReAct Agent 自主编排（取代旧固定 StateGraph）
+  │                           LLM 自主决定工具调用顺序与重试策略
   │
-  ▼
-graph/generation_graph.py ← LangGraph 状态图：RAG → Chain → 校验 → 重试 (≤3)
-  │                           PPT 额外: → 图片获取 → Q&A评分 → 修复循环
-  │
-  ├─ chains/ppt_chain.py    ← PptChain（视觉描述生成）
-  ├─ chains/qa_chain.py     ← 质量评估 + 修复循环
+  ├─ [工具] retrieve_knowledge  → RAG 检索（可选）
+  ├─ [工具] generate_outline    → chains/ppt_chain.py（场景 profile 注入）
+  ├─ [工具] fetch_images        → generator/ppt/image_provider.py
+  ├─ [工具] evaluate_quality    → chains/qa_chain.py（12 维评分 + 修复）
+  └─ [工具] build_document      → generator/ppt/generator.py
   │
   ▼
 generator/ppt/generator.py ← PptGenerator（分发到各布局渲染器）
   │
-  ├─ generator/_design.py          ← 公共 ColorPalette（PPT/Word/PDF 共用，含 chart/table 色）
-├─ generator/ppt/theme.py      ← PPT ColorTheme（从 _design 派生，含图表/表格衍生色）
-  ├─ generator/ppt/layout.py     ← 14 种布局类型 + DesignDNA（含 info_density）
-  ├─ generator/ppt/profiles.py   ← 7 套场景设计配置（设计哲学/密度/配色/叙事/装饰禁令）
-  ├─ generator/ppt/shapes.py     ← 声明式绘图工具包（含富文本/菱形/箭头/星形）
-  ├─ generator/ppt/layouts/      ← 每种布局的渲染器（11 种已实现）
-  │   ├─ cover.py                (封面，3 种变体)
-  │   ├─ section_header.py       (章节分隔，3 种变体)
-  │   ├─ text_only.py            (纯文字 + 装饰)
-  │   ├─ text_image.py           (图文混排：左右/上下)
-  │   ├─ two_column.py           (双栏对比)
-  │   ├─ grid_cards.py           (卡片网格)
-  │   ├─ chart.py                (图表：柱/折/饼/面积图)  ← v2.2 新增
-  │   ├─ table.py                (结构化数据表格)        ← v2.2 新增
-  │   ├─ big_number.py           (核心指标大数字突出)    ← v2.2 新增
-  │   ├─ timeline.py             (时间线/里程碑)         ← v2.2 新增
-  │   └─ summary.py              (总结/致谢)
-  └─ generator/ppt/image_provider.py ← 图片搜索/下载/降级  │
+  ├─ generator/_design.py          ← 公共 ColorPalette
+  ├─ generator/ppt/theme.py        ← PPT ColorTheme
+  ├─ generator/ppt/layout.py       ← 14 种布局类型 + DesignDNA
+  ├─ generator/ppt/profiles.py     ← 7 套场景设计配置
+  ├─ generator/ppt/shapes.py       ← 声明式绘图工具包
+  ├─ generator/ppt/layouts/        ← 11 种布局渲染器
+  │   ├─ cover.py / section_header.py / text_only.py
+  │   ├─ text_image.py / two_column.py / grid_cards.py
+  │   ├─ chart.py / table.py / big_number.py / timeline.py
+  │   └─ summary.py
+  └─ generator/ppt/image_provider.py ← Unsplash→Pexels→占位图 三级降级
+  │
   ▼
-client/file.py           ← RSA-SHA256 签名上传到 Java 后端存储
+client/file.py             ← RSA-SHA256 签名上传到 Java 后端存储
 ```
+
+**关键架构变更（v3.0）：**
+
+| | 旧 Workflow (v2.x) | 新 Agent (v3.0) |
+|---|---|---|
+| 编排引擎 | `graph/generation_graph.py`（固定 StateGraph） | `graph/agent.py`（ReAct Agent） |
+| 流程控制 | 代码硬编码节点顺序 | LLM 自主决定工具调用顺序 |
+| 重试策略 | 固定 ≤3 次 | LLM 自行判断是否需要重试 |
+| 步骤跳过 | `if doc_type == "ppt": skip` | LLM 根据任务类型自主跳过 |
+| 进度推送 | 按 Graph 节点 | 按工具调用事件 |
+| 入口 | `services/generation.py`（同步 HTTP） | `broker/consumer.py`（RabbitMQ 异步） |
 
 分层职责：
 
 | 层 | 文件 | 职责 |
 |----|------|------|
-| API | `api/ppt.py` | HTTP 端点，接收 `PptGenerateRequest`，返回 `ApiResponse` |
-| 服务 | `services/generation.py` | 业务编排：额度 `consume` / `refund`、图调用、文件上传 |
-| 图 | `graph/generation_graph.py` | LangGraph 状态图，编排 RAG → Chain → 校验 → 图片 → QA → 构建 |
-| Chain | `chains/ppt_chain.py` | PptChain，Prompt + LLM + JSON 视觉描述 |
-| Chain | `chains/ppt_chain.py` | PptChain，Prompt（场景 profile 注入）+ LLM + JSON 视觉描述 |
-| Chain | `chains/qa_chain.py` | 质量评估，逐页打分（含场景合规/图表数据检查）+ 修复循环 |
-| 设计系统 | `generator/ppt/profiles.py` | 7 套场景设计配置（v2.2 新增） |
+| 消费 | `broker/consumer.py` | RabbitMQ 消费 → 额度 → Agent → 回调 |
+| Agent | `graph/agent.py` | ReAct Agent，自主编排 6 个工具 |
+| Chain | `chains/ppt_chain.py` | Prompt（场景 profile 注入）+ LLM + JSON 视觉描述 |
+| Chain | `chains/qa_chain.py` | 12 维质量评估 + 修复循环 |
+| 设计系统 | `generator/ppt/profiles.py` | 7 套场景设计配置 |
 | 设计系统 | `generator/ppt/theme.py` | 6 套 ColorTheme |
 | 设计系统 | `generator/ppt/layout.py` | 14 种 LayoutType + DesignDNA（含 info_density） |
 | 设计系统 | `generator/ppt/shapes.py` | 声明式形状/文本框/图片/背景操作 |
@@ -151,14 +154,14 @@ Generator 通过设计系统 + 布局渲染器生成视觉丰富的幻灯片。
 ```mermaid
 sequenceDiagram
     autonumber
-    participant G as Graph._generate_outline
+    participant A as Agent.generate_outline
     participant PC as PptChain
     participant PF as SceneProfile
     participant PT as ChatPromptTemplate
     participant LLM as ChatOpenAI
     participant P as StrOutputParser
 
-    G->>PC: chain.ainvoke(inputs)
+    A->>PC: chain.ainvoke(inputs)
     Note over PC: inputs: topic, slide_count,<br/>language, style, context,<br/>extra_prompt
 
     PC->>PF: get_profile(style)
@@ -190,12 +193,12 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     autonumber
-    participant G as Graph._run_qa
+    participant A as Agent.evaluate_quality
     participant QA as PptQAChain
     participant PF as SceneProfile
     participant LLM as ChatOpenAI
 
-    G->>QA: evaluate_all(slides, style, threshold=70, max_rounds=3)
+    A->>QA: evaluate_all(slides, style, threshold=70, max_rounds=3)
 
     loop 每张幻灯片 (slide_0 ... slide_N)
         QA->>PF: get_profile(style) 获取场景要求
@@ -343,209 +346,90 @@ ColorPalette 新增图表/表格专用语义色：
 
 ---
 
-## 六、LangGraph 状态图设计
+## 六、Agent 编排设计
 
-### 6.1 状态 (`GenerationState`)
+### 6.1 Agent 架构
 
-PPT 特有字段:
-- `enable_images: bool` — 是否启用图片搜索
-- `images_map: dict` — slide_key → 本地图片路径列表
-- `qa_reports: list[dict]` — 逐页 QA 评分结果
+v3.0 起，PPT 生成不再使用固定的 LangGraph 状态图，改为 ReAct Agent 自主编排。
 
-### 6.2 节点
+Agent 拥有 6 个工具，由 LLM 自主决定调用顺序：
 
-| 节点 | 适用文档 | 职责 |
+| 工具 | 对应模块 | 职责 |
 |------|---------|------|
-| `retrieve_context` | 全部 | RAG 检索 |
-| `generate_outline` | 全部 | Chain 调用（PPT 用 PptChain） |
-| `validate_outline` | 全部 | 校验 JSON 结构 |
-| `fetch_images` | PPT | 图片搜索与下载 |
-| `run_qa` | PPT | 逐页 Q&A + 修复循环 |
-| `build_document` | 全部 | Generator 构建文件 |
-| `handle_error` | 全部 | 错误记录 |
+| `retrieve_knowledge` | `rag/retrieval.py` | RAG 混合检索（可选） |
+| `generate_outline` | `chains/ppt_chain.py` | 调用 PptChain 生成视觉大纲 |
+| `render_charts` | — | PPT 跳过（图表由布局渲染器内置） |
+| `fetch_images` | `generator/ppt/image_provider.py` | Unsplash→Pexels→占位图 |
+| `evaluate_quality` | `chains/qa_chain.py` | PptQAChain 逐页评分 + 修复 |
+| `build_document` | `generator/ppt/generator.py` | PptGenerator 构建 .pptx |
 
-### 6.3 路由
+### 6.2 Agent 决策流程
+
+Agent 收到任务后自主编排，典型流程如下（但 LLM 可根据任务灵活调整）：
 
 ```
-PPT: START → retrieve → generate → validate → fetch_images → run_qa → build → END
-Word/PDF: START → retrieve → generate → validate → render_charts → fetch_images → run_qa → build → END
+retrieve_knowledge → generate_outline → fetch_images → evaluate_quality → build_document
 ```
 
-### 6.4 PPT 状态流转图
+Agent 的自主权：
+- 如果大纲质量差，可多次调用 `generate_outline` 重新生成
+- 如果没有图片需求，可跳过 `fetch_images`
+- 如果质检不通过，可反复调用 `evaluate_quality` 修复
+- 最终必须调用 `build_document` 作为收尾
 
-```mermaid
-stateDiagram-v2
-    direction LR
-
-    [*] --> retrieve_context: START
-    retrieve_context --> generate_outline: context ready
-    generate_outline --> validate_outline: raw JSON
-
-    state validate_outline {
-        [*] --> 检查title
-        检查title --> 检查slides数量: title非空
-        检查title --> 校验失败: title为空
-        检查slides数量 --> 校验通过: slides ≥ 2
-        检查slides数量 --> 校验失败: slides < 2
-    }
-
-    validate_outline --> fetch_images: 校验通过
-    validate_outline --> generate_outline: attempt < 3 (重试)
-    validate_outline --> handle_error: attempt ≥ 3 (失败)
-
-    fetch_images --> run_qa: 图片就绪 (或降级占位图)
-    run_qa --> build_document: QA完成 (通过或降级)
-
-    state build_document {
-        [*] --> PptGenerator: 分发到布局渲染器
-        PptGenerator --> cover: layout_type=cover
-        PptGenerator --> section: layout_type=section
-        PptGenerator --> text_only: layout_type=text_only
-        PptGenerator --> text_image: layout_type=text_image
-        PptGenerator --> two_column: layout_type=two_column
-        PptGenerator --> grid_cards: layout_type=grid_cards
-        PptGenerator --> chart: layout_type=chart
-        PptGenerator --> table: layout_type=table
-        PptGenerator --> big_number: layout_type=big_number
-        PptGenerator --> timeline: layout_type=timeline
-        PptGenerator --> summary: layout_type=summary
-        cover --> [*]: .pptx 完成
-        section --> [*]
-        text_only --> [*]
-        text_image --> [*]
-        two_column --> [*]
-        grid_cards --> [*]
-        chart --> [*]
-        table --> [*]
-        big_number --> [*]
-        timeline --> [*]
-        summary --> [*]
-    }
-
-    build_document --> [*]: 文件就绪
-    handle_error --> [*]: 错误退出
-```
-
-### 6.5 Chain-Graph-Generator 关联图
+### 6.3 Agent-Generator 关联
 
 ```mermaid
 graph TB
-    subgraph Graph["LangGraph 状态图 (generation_graph.py)"]
-        direction LR
-        N1[retrieve_context]
-        N2[generate_outline]
-        N3[validate_outline]
-        N4[fetch_images]
-        N5[run_qa]
-        N6[build_document]
-        N7[handle_error]
-
-        N1 --> N2
-        N2 --> N3
-        N3 -->|通过| N4
-        N3 -->|重试| N2
-        N3 -->|失败| N7
-        N4 --> N5
-        N5 --> N6
+    subgraph Agent["ReAct Agent (graph/agent.py)"]
+        T1[retrieve_knowledge]
+        T2[generate_outline]
+        T3[fetch_images]
+        T4[evaluate_quality]
+        T5[build_document]
     end
 
     subgraph Chains["LangChain Chains"]
-        PC[PptChain<br/>chains/ppt_chain.py]
-        QA[PptQAChain<br/>chains/qa_chain.py]
+        PC[PptChain<br/>场景 profile 注入]
+        QA[PptQAChain<br/>12维评估+修复]
     end
 
-    subgraph Profiles["场景 Profile (v2.2)"]
-        PF[SceneProfile × 7<br/>generator/ppt/profiles.py]
-    end
-
-    subgraph Design["PPT 设计系统"]
-        CT[ColorTheme × 6<br/>theme.py]
-        DNA[DesignDNA<br/>layout.py]
-        SH[Shapes 工具包<br/>shapes.py]
-    end
-
-    subgraph Layouts["布局渲染器 (11种)"]
-        LY[cover / section / text_only<br/>text_image / two_column<br/>grid_cards / chart / table<br/>big_number / timeline / summary]
+    subgraph Generator["PPT 生成器"]
+        PG[PptGenerator]
+        LY[11种布局渲染器]
     end
 
     subgraph External["外部服务"]
         RAG[(RAG 向量库)]
-        LLM[(ChatOpenAI LLM)]
-        IMG[Unsplash/Pexels API]
-        JAVA[Java 后端存储]
+        LLM[(ChatOpenAI)]
+        IMG[Unsplash/Pexels]
+        JAVA[Java 后端]
     end
 
-    N1 -.->|检索| RAG
-    N2 ==>|调用 chain.ainvoke| PC
-    PC ==>|get_profile| PF
-    PC ==>|LLM 调用| LLM
-    N4 -.->|搜索下载| IMG
-    N5 ==>|evaluate_all| QA
-    QA ==>|get_profile| PF
-    QA ==>|LLM 调用| LLM
-    N6 ==>|PptGenerator.generate| LY
-    LY -.->|使用| CT
-    LY -.->|使用| DNA
-    LY -.->|使用| SH
-    N6 -.->|上传| JAVA
+    T1 -.->|检索| RAG
+    T2 ==>|调用| PC
+    PC ==>|LLM| LLM
+    T3 -.->|搜索| IMG
+    T4 ==>|调用| QA
+    QA ==>|LLM| LLM
+    T5 ==>|构建| PG
+    PG ==>|分发| LY
+    T5 -.->|上传| JAVA
 ```
 
-**关联说明：**
-
-| 图节点 | 调用的模块 | 数据流向 |
-|--------|-----------|---------|
-| `retrieve_context` | RAG 向量库 | material_ids → 检索 → 格式化上下文 |
-| `generate_outline` | `PptChain.chain.ainvoke()` | topic + style → SceneProfile 注入 → LLM → slides JSON |
-| `validate_outline` | 内联校验逻辑 | 检查 title 非空 + slides ≥ 2 |
-| `fetch_images` | Unsplash → Pexels → 占位图 | image_query → 三级降级搜索 → 本地路径 |
-| `run_qa` | `PptQAChain.evaluate_all()` | slides → 逐页12维评估 → 修复循环 → repaired_slides |
-| `build_document` | `PptGenerator.generate()` | slides + images_map → 11种布局分发 → .pptx |
-
-**PPT 与 Word/PDF 的关键差异：**
+### 6.4 与 Word/PDF 的差异
 
 | 差异点 | PPT | Word/PDF |
 |--------|-----|----------|
-| Chain | PptChain (场景 profile 注入) | WordChain / PdfChain |
-| QA | PptQAChain (逐页12维评估) | DocQAChain (整体8维评估) |
-| render_charts | 无 (图表在生成时内嵌) | 有 (预渲染为 PNG) |
-| 图片策略 | 按 slide 的 image_query 搜索 | 按 section 的 images[] 搜索 |
-| 输出格式 | python-pptx 直接构建 .pptx | DocxBuilder → .docx (→ LibreOffice .pdf) |
+| generate_outline | PptChain（场景 profile 注入） | WordChain / PdfChain |
+| evaluate_quality | PptQAChain（逐页 12 维） | DocQAChain（整体 8 维） |
+| render_charts | 跳过（图表内嵌于布局） | matplotlib 预渲染为 PNG |
+| fetch_images | 按 slide.image_query | 按 section.images[].query |
+| build_document | PptGenerator → .pptx | DocxBuilder → .docx / .pdf |
 
 ## 七、API 接口
 
-### 7.1 端点
-
-```
-POST /ai/ppt/generate
-Content-Type: application/json
-X-Timestamp / X-Nonce / X-Signature (RSA-SHA256)
-```
-
-**请求体** (`PptGenerateRequest` 继承 `GenerateRequest`)：
-
-| 字段 | 类型 | 必填 | 默认值 | 说明 |
-|------|------|------|--------|------|
-| `user_id` | str | 是 | — | 用户 ID |
-| `project_id` | str | 是 | — | 项目 ID |
-| `topic` | str | 是 | — | 文档主题 |
-| `language` | str | 否 | zh | zh / en |
-| `extra_prompt` | str | 否 | — | 用户补充指令 |
-| `material_ids` | list[str] | 否 | — | RAG 素材 ID 列表 |
-| `rag_enabled` | bool | 否 | false | 是否启用 RAG |
-| `callback_id` | str | 是 | — | 关联 Java 后端请求 ID |
-| `style` | str | 否 | academic | academic/business/creative/minimal/tech/warm |
-| `slide_count` | int | 否 | 10 | 1–50 |
-| `enable_images` | bool | 否 | true | 是否自动搜索配图（Unsplash→Pexels→占位图降级） |
-
-**响应** (`ApiResponse`)：
-
-```json
-{
-  "code": 0,
-  "message": "success",
-  "data": { "file_id": "...", "file_url": "..." }
-}
-```
+> **注意：** HTTP 同步接口（`POST /ai/ppt/generate`）已废弃。生产环境通过 RabbitMQ 异步消息队列触发生成（详见 `doc/RABBITMQ_ASYNC_PROTOCOL.md`）。Java 后端发送消息到 `doc.generate.ppt` 路由键，Python broker 消费后由 Agent 执行。
 
 ---
 
@@ -584,8 +468,9 @@ X-Timestamp / X-Nonce / X-Signature (RSA-SHA256)
 | `generator/ppt/generator.py` | **重构** | PptGenerator（设计系统 + 布局分发） |
 | `chains/ppt_chain.py` | **重构 (v2.2)** | 场景 profile 注入式视觉描述 Prompt |
 | `chains/qa_chain.py` | **增强 (v2.2)** | QA 扩展至 12 维（含场景合规/图表数据检查） |
-| `graph/generation_graph.py` | **重构** | 新增 fetch_images / run_qa 节点 |
+| `graph/agent.py` | **新建 (v3.0)** | ReAct Agent 自主编排，6 个工具 |
+| `graph/generation_graph.py` | **删除 (v3.0)** | 被 agent.py 完全取代 |
 | `config.py` | **修改** | 新增 PPT 相关配置项 |
 | `core/schemas.py` | **修改** | PptGenerateRequest 新增 enable_images |
-| `services/generation.py` | **修改** | 传递新参数到 Graph |
+| `broker/consumer.py` | **重构 (v3.0)** | 改为调用 Agent 编排器 |
 | `tests/test_ppt_complex.py` | **新建** | 完整测试套件 (7 项) |

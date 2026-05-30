@@ -14,14 +14,14 @@ from loguru import logger
 from config import settings
 
 # 异步上下文安全的 LLM 配置传递通道
-# generation_graph 在节点入口调用 set_llm_config()，后续 create_chat_model() 自动读取
+# graph.agent 在各工具入口调用 set_llm_config()，后续 create_chat_model() 自动读取
 _llm_config_ctx: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
     "llm_config", default=None
 )
 
 
 def set_llm_config(config: dict) -> None:
-    """设置当前异步上下文的 LLM 配置（由 generation_graph 节点入口调用）。
+    """设置当前异步上下文的 LLM 配置（由 graph.agent 各工具入口调用）。
 
     config 应包含: {"api_key": str, "base_url": str, "model_name": str}
     """

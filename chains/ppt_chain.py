@@ -285,9 +285,9 @@ class PptChain:
 
     @property
     def chain(self):
-        """返回 LangChain Runnable，保持与 generation_graph.py 的向后兼容。
+        """返回 LangChain Runnable，供 graph.agent 直接调用。
 
-        generation_graph 通过 PptChain().chain.ainvoke({...}) 调用，
+        graph/agent.py 通过 PptChain().chain.ainvoke({...}) 调用，
         返回原始 LLM 字符串，调用方自行做 JSON 解析。
         此处使用通用 prompt（不注入场景 profile），profile 注入在 ainvoke() 中处理。
         """
