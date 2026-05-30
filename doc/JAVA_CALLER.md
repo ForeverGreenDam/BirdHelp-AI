@@ -500,18 +500,68 @@ resp = signed_json_request("POST", "/api/internal/task/progress", {
 
 成功响应：`{"code": 0, "message": "ok", "data": null}`
 
-### 5.6 快速调用汇总
+### 5.6 大纲接口（v5.2 新增）
+
+#### GET /api/internal/file/{id}/outline — 读取文档大纲
+
+Python 对话修改时获取文件的完整大纲 JSON（100% 保真）。
+
+请求：`GET /api/internal/file/{fileId}/outline`（无请求体）
+
+响应：`{"code": 0, "message": "ok", "data": {"fileId": 100, "outline": "{...}", "fileName": "...", "fileType": 1}}`
+
+#### PUT /api/internal/file/{id}/outline — 更新文档大纲
+
+Python 修改完成后将新大纲写回 DB。
+
+请求：`PUT /api/internal/file/{fileId}/outline`，JSON body：`{"outline": "{...}"}`
+
+### 5.7 会话接口（v5.2 新增）
+
+#### POST /api/internal/chat/session — 获取或创建会话
+
+幂等接口，按 sessionId 查找已有会话或创建新会话。
+
+请求：
+```json
+{
+    "sessionId": "uuid-v4",
+    "userId": 1,
+    "projectId": 1,
+    "originalFileId": 100,
+    "docType": "ppt"
+}
+```
+
+响应：`{"code": 0, "data": {"sessionId": "...", "messages": [...], ...}}`
+
+#### POST /api/internal/chat/session/{sessionId}/messages — 追加消息
+
+追加 user 和 assistant 消息，同时更新 currentFileId。
+
+请求：
+```json
+{
+    "messages": [
+        {"role": "user", "content": "修改指令"},
+        {"role": "assistant", "content": "AI 回复", "fileId": 101}
+    ],
+    "currentFileId": 101
+}
+```
+
+### 5.8 快速调用汇总
 
 ```python
 # 额度
 signed_json_request("POST", "/api/internal/quota/consume", {"userId": 1, "relatedId": 123})
 signed_json_request("POST", "/api/internal/quota/refund",  {"userId": 1, "relatedId": 123})
 
-# 文件上传
+# 文件上传（v5.2: 支持 versionOf 建立版本链）
 with open("file.pdf", "rb") as f:
     signed_multipart_request("POST", "/api/internal/file/upload",
         files={"file": ("file.pdf", f, "application/octet-stream")},
-        data={"userId": "1", "projectId": "5", "fileName": "file.pdf"})
+        data={"userId": "1", "projectId": "5", "fileName": "file.pdf", "versionOf": "100"})
 
 # 文件下载
 signed_no_body_request("GET", "/api/internal/file/42/download")
@@ -519,10 +569,11 @@ signed_no_body_request("GET", "/api/internal/file/42/download")
 # 文件删除
 signed_no_body_request("DELETE", "/api/internal/file/42?userId=1")
 
-# 任务完成回调
+# 任务完成回调（v5.2: 携带 outline）
 signed_json_request("POST", "/api/internal/task/callback", {
     "taskId": "...", "callbackId": "...", "userId": 42, "projectId": 100,
     "status": "completed", "fileId": 999, "fileUrl": "...", "fileName": "...",
+    "outline": "{\"slides\":[...]}",
     "qaLowestScore": 72, "qaPassedCount": 14, "qaTotalCount": 15,
     "generationTimeMs": 45230, "errorCode": 0, "errorMessage": ""
 })
@@ -533,9 +584,16 @@ signed_json_request("POST", "/api/internal/task/progress", {
     "stage": "running_qa", "progress": 65, "message": "正在质量评审：第 10/15 页"
 })
 
+# 大纲读写（v5.2 新增）
+signed_no_body_request("GET", "/api/internal/file/100/outline")
+signed_json_request("PUT", "/api/internal/file/100/outline", {"outline": "{...}"})
+
+# 会话管理（v5.2 新增）
+signed_json_request("POST", "/api/internal/chat/session", {...})
+signed_json_request("POST", "/api/internal/chat/session/uuid-v4/messages", {...})
+
 # 获取 LLM API Key
 signed_json_request("POST", "/api/internal/api-key/fetch", {})
-signed_json_request("POST", "/api/internal/api-key/fetch?providerName=openai", {})
 ```
 
 ### 5.6 API Key 获取接口

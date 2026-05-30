@@ -82,6 +82,9 @@ class Settings(BaseSettings):
     rabbitmq_queue: str = "birdhelp.doc.generation.tasks"
     rabbitmq_prefetch: int = 1
 
+    # ── 对话修改 ──
+    modify_max_retries: int = 3
+
     # ── LangSmith (可选) ──
     langsmith_api_key: str = ""
     langsmith_project: str = "BirdHelp-AI"

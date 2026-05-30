@@ -1,6 +1,8 @@
 # BirdHelp AI 模块设计文档
 
-> v4.4 | 2026-05-28 | API Key 架构升级：聊天模型凭证由 Java 端通过 RabbitMQ 消息注入；嵌入模型凭证从 .env 读取
+> v5.2 | 2026-05-30 | 对话修改模块实现：LLM 修改大纲 → 重建文件（无 QA）；broker 回调携带 outline；Java 内部 API 扩展（大纲/会话）；文件预览 + 版本链 + RAG 过滤
+
+> v4.4 | 2026-05-28 | API Key 架构升级
 
 ---
 
@@ -50,13 +52,12 @@ BirdHelp/
 ├── main.py
 ├── config.py
 │
-├── api/                    # 对外 API（✅ 已实现: router, material, ppt, word, pdf）
-│   ├── router.py           #   │ 待实现: chat, ocr
+├── api/                    # 对外 API（✅ 已实现: router, material）
+│   ├── router.py           #
 │   ├── material.py         # ✅ POST /ai/material/upload
-│   ├── ppt.py              # ✅ POST /ai/ppt/generate
-│   ├── word.py             # ✅ POST /ai/word/generate
-│   ├── pdf.py              # ✅ POST /ai/pdf/generate
-│   ├── chat.py             # ⬜ POST /ai/chat/modify
+│   ├── ppt.py              # ❌ 已移除 → RabbitMQ
+│   ├── word.py             # ❌ 已移除 → RabbitMQ
+│   ├── pdf.py              # ❌ 已移除 → RabbitMQ
 │   └── ocr.py              # ⬜ POST /ai/ocr/recognize
 │
 ├── chains/                 # LangChain Chain（✅ 全部实现）
@@ -65,11 +66,18 @@ BirdHelp/
 │   ├── word_chain.py       # ✅ WordChain（图表+插图+表格增强 Prompt）
 │   ├── word_qa_chain.py    # ✅ Word/PDF 文档 QA + 修复循环
 │   ├── pdf_chain.py        # ✅ PdfChain（图表+插图+表格增强 Prompt）
-│   └── chat_chain.py       # ⬜ 对话修改 Chain
+│
+├── modify/                 # ✅ 对话修改模块 (v5.2)
+│   ├── api.py              # ✅ POST /ai/chat/modify, /ai/chat/discuss
+│   ├── schemas.py          # ✅ Pydantic 模型
+│   ├── chain.py            # ✅ LLM 对话修改 Prompt
+│   ├── graph.py            # ✅ LangGraph 状态图（无 QA）
+│   ├── client.py           # ✅ Java 内部 API 客户端（大纲/会话）
+│   ├── parser.py           # ✅ 文档逆向解析（降级兜底）
+│   └── service.py          # ✅ 业务编排
 │
 ├── graph/                  # LangGraph 工作流（✅ generation_graph 已实现）
-│   ├── generation_graph.py # ✅ 文档生成状态图 (RAG→Chain→校验→重试→构建)
-│   └── chat_graph.py       # ⬜ 对话修改状态图
+│   └── generation_graph.py # ✅ 文档生成状态图 (RAG→Chain→校验→QA→重试→构建)
 │
 ├── rag/                    # RAG 管线（✅ 已实现）
 │   ├── ingestion.py        # ✅ 文档下载→解析→切分→嵌入→入库
@@ -176,7 +184,8 @@ create_embeddings()
 | POST | `/ai/ppt/generate` | 生成 PPT（支持 RAG）| ❌ 已移除 |
 | POST | `/ai/word/generate` | 生成 Word（支持 RAG）| ❌ 已移除 |
 | POST | `/ai/pdf/generate` | 生成 PDF（支持 RAG）| ❌ 已移除 |
-| POST | `/ai/chat/modify` | 对话式修改文档 | ⬜ |
+| POST | `/ai/chat/modify` | 对话式修改文档（LLM 修改大纲 + 重建文件） | ✅ v5.2 |
+| POST | `/ai/chat/discuss` | 仅讨论/问答（不重建文件） | ✅ v5.2 |
 | POST | `/ai/ocr/recognize` | 独立 OCR 识别接口 | ⬜ |
 | GET | `/ai/task/{task_id}/status` | 查询异步任务状态 | ⬜ |
 
@@ -193,6 +202,10 @@ create_embeddings()
 | POST | `/api/internal/file/upload` | 文件生成完成后上传 | ✅ |
 | POST | `/api/internal/task/callback` | 异步任务完成/失败回调 | ✅ |
 | POST | `/api/internal/task/progress` | 异步任务进度推送 | ✅ |
+| GET | `/api/internal/file/{id}/outline` | 读取文档大纲（对话修改时） | ✅ v5.2 |
+| PUT | `/api/internal/file/{id}/outline` | 更新文档大纲（修改完成后） | ✅ v5.2 |
+| POST | `/api/internal/chat/session` | 获取或创建对话会话 | ✅ v5.2 |
+| POST | `/api/internal/chat/session/{id}/messages` | 追加对话消息 | ✅ v5.2 |
 
 ---
 
@@ -307,14 +320,26 @@ Java 收到回调 → 更新任务状态 → 前端轮询获得结果
 
 > 完整消息协议、ACK/NACK 规则、回调格式见 `doc/RABBITMQ_ASYNC_PROTOCOL.md`。
 
-### 6.2 对话修改
+### 6.2 对话修改（v5.2 实现）
 
 ```
-用户消息 → LangGraph 恢复会话状态
-  → 判断是否需要 RAG → Chat Chain 输出修改指令 JSON
-  → 代码执行增量编辑 (python-pptx/docx 对象模型)
-  → 保存新文件 → 上传
+前端 → Java ChatController (JWT 鉴权 + 日志)
+     → AiModuleCaller (RSA 签名) → Python POST /ai/chat/modify
+     → modify/service.py 编排:
+        ① GET /internal/file/{id}/outline → 获取大纲（100% 保真）
+          ↓ outline 为空时 → modify/parser.py 逆向解析降级
+        ② POST /internal/chat/session → 获取/创建会话 + 历史消息
+        ③ modify/graph.py LangGraph:
+            chat_analyze (LLM 基于现有大纲修改)
+            → validate_output (JSON 校验，失败重试 ≤3 次)
+            → rebuild_file (Generator 重建，不复用图片搜索)
+            → upload_file (上传携带 versionOf 建立版本链)
+        ④ PUT /internal/file/{id}/outline → 存新大纲
+        ⑤ POST /internal/chat/session/{id}/messages → 追加消息
+     → 返回 AI 回复 + 新大纲 + 新 file_id
 ```
+
+**与生成流程的差异：** 无 RAG 检索、无 QA 评分（用户主观修改不应被拦截）、无图片搜索（复用原文件图片）。
 
 ### 6.3 异步任务架构（Phase 7 — 已实现）
 
@@ -408,17 +433,19 @@ Exchange: birdhelp.doc.generation (topic, durable)
 - 生成接口：`POST /ai/ppt/generate` ✅ / `/ai/word/generate` / `/ai/pdf/generate`
 - 生成完成后上传文件至 Java 后端
 
-### Phase 4: 对话修改（第 4–5 周）
+### Phase 4: 对话修改 ✅ 已完成（v5.2）
 
 **目标：** 用户通过多轮对话对已生成文档进行增量修改。
 
-- Chat Chain：`chains/chat_chain.py`（对话 → 修改指令 JSON → 增量编辑）
-- LangGraph 对话状态图：
-  - `graph/chat_graph.py` — 会话管理、RAG 可选注入、修改 → 检查 → 重试循环
-- 增量编辑能力（python-pptx / python-docx 对象模型操作）
-- 多轮对话历史持久化
-- `POST /ai/chat/modify` 接口
-- OCR 兜底功能（延迟至时间充裕时实现，见 [七、Phase 6](#phase-6-ocr-兜底--图片识别后续迭代)）
+- ✅ `modify/chain.py` — LLM 对话修改 Prompt + 结构化输出
+- ✅ `modify/graph.py` — LangGraph 状态图（chat_analyze → validate → rebuild → upload，无 QA）
+- ✅ `modify/client.py` — Java 内部 API 客户端（大纲读写 + 会话 CRUD，RSA 签名）
+- ✅ `modify/parser.py` — 文档逆向解析降级兜底（旧文件无 outline 时）
+- ✅ `modify/service.py` — 业务编排（获取大纲→LLM→重建→同步Java）
+- ✅ `modify/api.py` — `POST /ai/chat/modify` + `POST /ai/chat/discuss`
+- ✅ broker 回调携带 outline → Java 存入 `file_record.outline`
+- ✅ 版本链：修改版上传携带 `versionOf`，文件列表只展示链尾
+- 详见 `doc/CHAT_MODIFY_DESIGN.md`
 
 ### Phase 5: 辅助能力 + 上线（第 6–7 周）
 

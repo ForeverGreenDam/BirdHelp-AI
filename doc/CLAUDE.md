@@ -26,11 +26,12 @@ pip install -r requirements.txt
 **分层结构** (详见 DESIGN.md 第三章):
 - `api/` — FastAPI 路由层，对外暴露 `/ai/*` 接口，由 Java 后端代理转发
 - `chains/` — LangChain Chain 定义（ppt_chain / word_chain / pdf_chain / chat_chain），封装 Prompt + LLM + OutputParser
-- `graph/` — LangGraph 状态图（generation_graph: RAG→生成→检查→重试；chat_graph: 对话修改）
+- `graph/` — LangGraph 状态图（generation_graph: RAG→生成→检查→重试）
+- `modify/` — 对话修改文档模块（LLM 修改大纲 → Generator 重建文件，无 QA，详见 `doc/CHAT_MODIFY_DESIGN.md`）
 - `rag/` — RAG 管线（ingestion → retrieval → vector_store）
 - `generator/` — Office 文件生成：PPT（python-pptx + 设计系统 + 11种布局 + 7套场景profile + 图表/表格）、Word/PDF（python-docx + DocxBuilder + matplotlib 图表 + LibreOffice）
-- `broker/` — RabbitMQ 消费者（消费文档生成任务 → 执行生成 → HTTP 回调通知 Java）
-- `client/` — 调用 Java 后端内部接口（quota / file / task callback）
+- `broker/` — RabbitMQ 消费者（消费文档生成任务 → 执行生成 → HTTP 回调通知 Java，回调时携带 outline）
+- `client/` — 调用 Java 后端内部接口（quota / file / task callback / outline / chat session）
 - `core/` — 基础设施（ChatModel 工厂、Embedding 工厂、Schemas、异常）
 
 **核心流程**: Java → RabbitMQ → broker 消费 → LangGraph 状态图 → RAG 检索(可选) → LangChain Chain → LLM 生成 → 文件生成器 → 上传 Java 后端 → HTTP 回调通知结果
@@ -47,11 +48,15 @@ pip install -r requirements.txt
 |------|---------|
 | `POST /api/internal/quota/consume` | 生成开始前扣额度 |
 | `POST /api/internal/quota/refund` | 生成失败退额度 |
-| `POST /api/internal/file/upload` | 文件上传（素材 / 生成结果） |
+| `POST /api/internal/file/upload` | 文件上传（素材 / 生成结果，携带 versionOf 建立版本链） |
 | `GET /api/internal/file/{id}/download` | 文件下载 |
 | `DELETE /api/internal/file/{id}` | 软删除文件 |
-| `POST /api/internal/task/callback` | 异步任务完成/失败回调 |
+| `POST /api/internal/task/callback` | 异步任务完成/失败回调（携带 outline） |
 | `POST /api/internal/task/progress` | 异步任务进度推送（可选） |
+| `GET /api/internal/file/{id}/outline` | 获取文档大纲（对话修改时使用） |
+| `PUT /api/internal/file/{id}/outline` | 更新文档大纲（修改完成后） |
+| `POST /api/internal/chat/session` | 获取或创建对话会话 |
+| `POST /api/internal/chat/session/{id}/messages` | 追加对话消息 |
 
 **Java → AI**（详见 `doc/PYTHON_CALLER.md`）:
 

@@ -8,6 +8,8 @@ from fastapi import APIRouter, Depends
 
 from core.auth import require_java_caller
 from api.material import router as material_router
+from modify.api import router as modify_router
 
 api_router = APIRouter(dependencies=[Depends(require_java_caller)])
 api_router.include_router(material_router)
+api_router.include_router(modify_router)

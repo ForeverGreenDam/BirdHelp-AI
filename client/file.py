@@ -12,17 +12,34 @@ from config import settings
 INTERNAL = f"{settings.java_api_prefix}/internal/file"
 
 
-async def upload(file_path: str, user_id: int, project_id: int, file_name: str) -> dict:
+async def upload(
+    file_path: str,
+    user_id: int,
+    project_id: int,
+    file_name: str,
+    version_of: int | None = None,
+) -> dict:
     """上传文件到 Java 后端存储（内部接口）。
 
     对应 POST /api/internal/file/upload，multipart/form-data。
+
+    Args:
+        file_path: 本地文件路径
+        user_id: 用户 ID
+        project_id: 项目 ID
+        file_name: 文件名（含扩展名）
+        version_of: 上一版本文件 ID（修改链，可选）。修改版上传时传入此字段，
+                    Java 据此建立 file_record.version_of 版本链
     """
     from client.http import upload_file as _upload_file
-    return await _upload_file(f"{INTERNAL}/upload", file_path, {
+    fields: dict[str, str] = {
         "userId": str(user_id),
         "projectId": str(project_id),
         "fileName": file_name,
-    })
+    }
+    if version_of is not None:
+        fields["versionOf"] = str(version_of)
+    return await _upload_file(f"{INTERNAL}/upload", file_path, fields)
 
 
 async def download(file_id: int, save_path: str = "") -> bytes:

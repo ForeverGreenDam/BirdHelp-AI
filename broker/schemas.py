@@ -70,6 +70,7 @@ class TaskCallback(BaseModel):
     file_id: int | None = None
     file_url: str | None = None
     file_name: str | None = None
+    outline: str | None = None  # 文档大纲 JSON（生成完成时回传，用于对话修改和预览布局标注）
     qa_lowest_score: int | None = None
     qa_passed_count: int | None = None
     qa_total_count: int | None = None
@@ -88,6 +89,7 @@ class TaskCallback(BaseModel):
             "fileId": self.file_id,
             "fileUrl": self.file_url,
             "fileName": self.file_name,
+            "outline": self.outline,
             "qaLowestScore": self.qa_lowest_score,
             "qaPassedCount": self.qa_passed_count,
             "qaTotalCount": self.qa_total_count,

@@ -413,7 +413,7 @@ class GenerationConsumer:
         graph_result: dict[str, Any],
         start_ms: int,
     ) -> None:
-        """发送完成回调到 Java。"""
+        """发送完成回调到 Java，携带文档大纲 JSON 用于后续对话修改。"""
         from client.task import callback as send_callback
 
         data = upload_result.get("data", {}) if isinstance(upload_result, dict) else {}
@@ -421,6 +421,15 @@ class GenerationConsumer:
         file_url = data.get("file_url") or data.get("fileUrl") or ""
 
         qa_info = GenerationConsumer._extract_qa_info(graph_result)
+
+        # 提取大纲 JSON，序列化为字符串传给 Java 存入 file_record.outline
+        parsed_outline = graph_result.get("parsed_outline", {})
+        outline_str: str | None = None
+        if parsed_outline and isinstance(parsed_outline, dict):
+            try:
+                outline_str = json.dumps(parsed_outline, ensure_ascii=False)
+            except (TypeError, ValueError) as exc:
+                logger.warning(f"[{task_msg.task_id}] Failed to serialize outline: {exc}")
 
         elapsed = int(_time_mod.monotonic() * 1000) - start_ms
         cb = TaskCallback(
@@ -432,6 +441,7 @@ class GenerationConsumer:
             file_id=file_id,
             file_url=file_url,
             file_name=data.get("fileName", ""),
+            outline=outline_str,
             qa_lowest_score=qa_info.get("lowest"),
             qa_passed_count=qa_info.get("passed"),
             qa_total_count=qa_info.get("total"),
@@ -440,7 +450,8 @@ class GenerationConsumer:
             error_message="",
         )
         await send_callback(cb)
-        logger.info(f"[{task_msg.task_id}] Success callback sent, fileId={file_id}, elapsed={elapsed}ms")
+        logger.info(f"[{task_msg.task_id}] Success callback sent, fileId={file_id}, "
+                     f"hasOutline={outline_str is not None}, elapsed={elapsed}ms")
 
     @staticmethod
     async def _send_failure_callback(
