@@ -208,3 +208,51 @@ async def invoke_llm(
     except Exception as exc:
         logger.error(f"LLM modify call failed: {exc}")
         raise
+
+
+async def generate_title(
+    outline: dict[str, Any],
+    user_message: str,
+    doc_type: str,
+) -> str:
+    """根据首次对话生成会话标题（仿 DeepSeek / ChatGPT 行为）。
+
+    Args:
+        outline: 当前文档大纲
+        user_message: 用户首条消息
+        doc_type: ppt / word / pdf
+
+    Returns:
+        生成的标题（≤20 字），失败时返回空字符串
+    """
+    # 提取大纲摘要：标题 + 前几页标题
+    outline_summary = outline.get("title", "")
+    pages = outline.get("slides", outline.get("sections", []))
+    page_titles = [
+        p.get("title", p.get("heading", ""))
+        for p in pages[:5] if p.get("title") or p.get("heading")
+    ]
+    if page_titles:
+        outline_summary += " | " + " → ".join(page_titles)
+
+    prompt = f"""根据以下信息，生成一个简短的会话标题（不超过 20 字），用于左侧栏标签展示。
+
+文档主题：{outline_summary[:300]}
+用户首条消息：{user_message[:200]}
+文档类型：{doc_type}
+
+只输出标题本身，不要引号、不要解释。"""
+
+    try:
+        llm = create_chat_model()
+        result = await llm.ainvoke([HumanMessage(content=prompt)])
+        title = result.content.strip() if hasattr(result, 'content') else str(result).strip()
+        # 清理：去掉可能的引号、截断过长
+        title = title.replace('"', '').replace('「', '').replace('」', '').strip()
+        if len(title) > 20:
+            title = title[:20]
+        logger.info(f"Title generated: '{title}'")
+        return title
+    except Exception as exc:
+        logger.warning(f"Title generation failed (non-critical): {exc}")
+        return ""

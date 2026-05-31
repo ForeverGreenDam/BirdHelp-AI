@@ -160,6 +160,15 @@ async def execute_modify(
     except ModifyClientError as exc:
         logger.warning(f"[Modify] 追加消息失败（非致命）: {exc.detail}")
 
+    # ── 首轮对话生成标题（仿 ChatGPT/DeepSeek） ──
+    title = ""
+    if success and not history:
+        try:
+            from modify.chain import generate_title
+            title = await generate_title(outline, message, doc_type)
+        except Exception as exc:
+            logger.warning(f"[Modify] Title generation failed (non-critical): {exc}")
+
     return {
         "session_id": session_id,
         "reply": reply,
@@ -167,6 +176,7 @@ async def execute_modify(
         "changes": changes,
         "file_id": new_file_id or None,
         "file_url": new_file_url or None,
+        "title": title,
         "success": success,
         "_meta": {
             "outline_source": outline_source,
