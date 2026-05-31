@@ -56,7 +56,7 @@ async def update_outline(file_id: int, outline_json: str) -> None:
     """
     path = f"/api/internal/file/{file_id}/outline"
     try:
-        result = await put(path, {"outline": outline_json})
+        result = await put(path, json_body={"outline": outline_json})
         if isinstance(result, dict) and result.get("code") == 0:
             return
         raise ModifyClientError(path, result.get("code", -1), str(result))

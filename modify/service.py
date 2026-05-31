@@ -1,11 +1,14 @@
-"""对话修改业务编排 — 协调 client / parser / graph 完成完整修改流程。
+"""对话修改/讨论业务编排 — 协调 client / parser / graph 完成完整流程。
 
-流程（§二.2.3）:
-  ① 调 Java API 获取大纲（100% 保真）
-  ② 调 Java API 获取/创建会话 + 历史消息
-  ③ 执行 LangGraph 状态图（LLM 修改大纲 → 校验 → 重建文件 → 上传）
-  ④ 调 Java API 更新大纲 + 追加消息
-  ⑤ 返回 AI 回复 + 新大纲 + 新 file_id
+modify 流程:
+  ① 调 Java API 获取大纲  ② 获取/创建会话 + 历史
+  ③ 执行 LangGraph（LLM 修改大纲 → 校验 JSON → 重建文件 → 上传）
+  ④ 回调 Java 更新大纲 + 追加消息  ⑤ 返回新大纲 + file_id
+
+discuss 流程:
+  ① 调 Java API 获取大纲  ② 获取/创建会话 + 历史
+  ③ 执行 LangGraph（LLM 自然语言建议 → 跳过校验/重建）
+  ④ 追加消息到会话  ⑤ 返回 AI 文本回复
 """
 
 from __future__ import annotations
@@ -27,31 +30,25 @@ async def execute_modify(
     message: str,
     history: list[dict[str, str]],
     regenerate_file: bool = True,
+    mode: str = "modify",
     callback_id: str = "",
 ) -> dict[str, Any]:
-    """执行完整的对话修改流程。
+    """执行完整的对话修改/讨论流程。
 
     Args:
         user_id: 用户 ID
         project_id: 项目 ID
         session_id: 会话 ID
-        file_id: 被修改的源文件 ID
+        file_id: 源文件 ID
         doc_type: 文档类型 (ppt/word/pdf)
-        message: 用户当前的修改指令
+        message: 用户消息
         history: 对话历史消息列表
-        regenerate_file: 是否重建文件
+        regenerate_file: 是否重建文件（discuss 时忽略）
+        mode: "modify" 或 "discuss"
         callback_id: 关联 Java 后端请求 ID
 
     Returns:
-        {
-            "session_id": "...",
-            "reply": "AI 文本回复",
-            "outline": {...} or None,
-            "changes": [{...}],
-            "file_id": "..." or None,
-            "file_url": "..." or None,
-            "success": bool
-        }
+        {session_id, reply, outline, changes, file_id, file_url, title, success, _meta}
     """
     from modify.client import (
         get_outline,
@@ -108,6 +105,7 @@ async def execute_modify(
 
     # ── 步骤 3: 执行 LangGraph ──
     state = {
+        "mode": mode,
         "user_id": user_id,
         "project_id": project_id,
         "session_id": session_id,
@@ -116,7 +114,7 @@ async def execute_modify(
         "message": message,
         "history": history,
         "current_outline": outline,
-        "rebuild_file": regenerate_file,
+        "should_rebuild": regenerate_file,
         "chain_output": "",
         "new_outline": {},
         "changes": [],
@@ -195,10 +193,10 @@ async def execute_discuss(
     history: list[dict[str, str]],
     callback_id: str = "",
 ) -> dict[str, Any]:
-    """执行仅讨论/问答（不重建文件）。
+    """执行对话讨论（不修改大纲、不重建文件）。
 
-    复用 modify graph 但设置 regenerate_file=False，LLM 只改大纲层面
-    但不触发文件重建和上传。
+    使用 discuss 专用 prompt，LLM 以自然语言提供建议/分析，
+    跳过 JSON 校验和文件重建，直接返回文本回复。
     """
     return await execute_modify(
         user_id=user_id,
@@ -209,6 +207,7 @@ async def execute_discuss(
         message=message,
         history=history,
         regenerate_file=False,
+        mode="discuss",
         callback_id=callback_id,
     )
 

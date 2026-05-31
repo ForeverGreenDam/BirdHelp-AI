@@ -196,10 +196,8 @@ async def fetch_images_for_slides(
     # 收集需要图片的页面
     image_tasks: list[dict] = []
     for slide in slides:
-        vp = slide.get("visual_plan", {})
-        strategy = vp.get("strategy", "AUTO")
         query = slide.get("image_query", "").strip()
-        if not query or strategy == "BASIC_GRAPHICS_ONLY":
+        if not query:
             continue
         page_key = f"slide_{slide.get('page_number', 0):02d}"
         image_tasks.append({

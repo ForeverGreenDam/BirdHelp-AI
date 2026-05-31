@@ -1,15 +1,12 @@
-"""LangGraph 对话修改状态图 — 无 QA 版的轻量工作流。
+"""LangGraph 对话修改/讨论双模状态图。
 
-与 GenerationGraph 的区别（§三.3.3）:
-  - 无 RAG 检索（不需要素材参考）
-  - 无 QA 评分+修复（用户主观修改不应被拦截/改写）
-  - 无图片搜索（重建时可复用原文件的图片结果）
-  - LLM 基于现有大纲修改（而非从零生成）
+模式（mode）:
+  - "modify": 用户意图修改文档 → LLM 输出新大纲 JSON → 校验 → 重建 → 上传
+  - "discuss": 用户提问/讨论文档 → LLM 输出自然语言建议 → 跳过校验/重建
 
-结构（§三.3.4）:
-  START → chat_analyze(LLM修改) → validate_output → [pass→rebuild→upload→END]
-                                      ↓
-                                [retry ≤3次] [fail→END]
+结构:
+  modify: START → chat_analyze → validate_output → rebuild → upload → END
+  discuss: START → chat_analyze → validate_output(skip) → END
 """
 
 from __future__ import annotations
@@ -31,8 +28,9 @@ EXTENSION_MAP = {"ppt": ".pptx", "word": ".docx", "pdf": ".pdf"}
 # ── 状态定义 ──
 
 class ModifyState(TypedDict, total=False):
-    """对话修改状态。"""
+    """对话修改/讨论状态。"""
 
+    mode: str  # "modify" 或 "discuss"
     user_id: str
     project_id: str
     session_id: str
@@ -50,7 +48,7 @@ class ModifyState(TypedDict, total=False):
     changes: list[dict]  # 变更摘要
 
     # 文件生成
-    rebuild_file: bool  # 是否重建文件
+    should_rebuild: bool  # 是否重建文件
     file_path: str
     new_file_id: str
     new_file_url: str
@@ -104,25 +102,34 @@ def get_modify_graph() -> StateGraph:
 # ── 节点函数 ──
 
 async def _chat_analyze(state: ModifyState) -> ModifyState:
-    """LLM 分析用户意图并修改大纲。"""
-    from modify.chain import invoke_llm
+    """LLM 分析用户意图：modify 输出新大纲 JSON，discuss 输出自然语言建议。"""
+    from modify.chain import invoke_modify_llm, invoke_discuss_llm
 
+    mode = state.get("mode", "modify")
     attempts = state.get("attempts", 0) + 1
-    logger.info(f"[Modify::{state.get('session_id', '?')}] Chat analyze attempt {attempts}")
+    logger.info(f"[{mode.capitalize()}::{state.get('session_id', '?')}] Chat analyze attempt {attempts}")
 
     try:
-        llm_output = await invoke_llm(
-            outline=state["current_outline"],
-            history=state.get("history", []),
-            user_message=state["message"],
-            doc_type=state.get("doc_type", "ppt"),
-        )
+        if mode == "discuss":
+            llm_output = await invoke_discuss_llm(
+                outline=state["current_outline"],
+                history=state.get("history", []),
+                user_message=state["message"],
+                doc_type=state.get("doc_type", "ppt"),
+            )
+        else:
+            llm_output = await invoke_modify_llm(
+                outline=state["current_outline"],
+                history=state.get("history", []),
+                user_message=state["message"],
+                doc_type=state.get("doc_type", "ppt"),
+            )
 
         state["chain_output"] = llm_output
         state["attempts"] = attempts
 
     except Exception as exc:
-        logger.error(f"[Modify] LLM call failed (attempt {attempts}): {exc}")
+        logger.error(f"[{mode.capitalize()}] LLM call failed (attempt {attempts}): {exc}")
         state["error"] = f"LLM 调用失败: {exc}"
         state["attempts"] = attempts
 
@@ -130,8 +137,17 @@ async def _chat_analyze(state: ModifyState) -> ModifyState:
 
 
 def _validate_output(state: ModifyState) -> ModifyState:
-    """解析 LLM 输出为结构化大纲，校验结构合法性。"""
+    """modify 模式：解析 LLM 输出为结构化大纲，校验结构合法性。
+    discuss 模式：直接将 LLM 文本回复作为 ai_reply 透传，跳过 JSON 解析。"""
+    mode = state.get("mode", "modify")
     chain_output = state.get("chain_output", "")
+
+    if mode == "discuss":
+        state["ai_reply"] = chain_output or "抱歉，我没有生成有效的回复。"
+        state["error"] = ""
+        state["changes"] = []
+        logger.info(f"[Discuss] Reply length: {len(state['ai_reply'])}")
+        return state
 
     try:
         # 使用项目的 safe_json_parse 工具（支持 markdown 代码块中的 JSON）
@@ -183,10 +199,13 @@ def _validate_output(state: ModifyState) -> ModifyState:
 
 
 def _route_after_validate(state: ModifyState) -> str:
-    """根据校验结果路由。"""
+    """根据校验结果路由。discuss 模式校验通过后直接结束。"""
+    mode = state.get("mode", "modify")
     error = state.get("error", "")
     if not error:
-        if state.get("rebuild_file", True):
+        if mode == "discuss":
+            return "done"
+        if state.get("should_rebuild", True):
             return "rebuild"
         return "done"
 
@@ -203,8 +222,9 @@ def _route_after_validate(state: ModifyState) -> str:
 
 
 async def _rebuild_file(state: ModifyState) -> ModifyState:
-    """根据新大纲重建文档文件（复用 GenerationGraph 的 Generator）。"""
+    """根据新大纲重建文档文件。PPT 会先搜索下载配图再生成，确保图片不丢失。"""
     from generator.ppt import PptGenerator
+    from generator.ppt.image_provider import fetch_images_for_slides
     from generator.word import WordGenerator
     from generator.pdf import PdfGenerator
     from utils.file import temp_file_path, ensure_temp_dir
@@ -218,12 +238,22 @@ async def _rebuild_file(state: ModifyState) -> ModifyState:
     new_outline = state.get("new_outline", {})
     file_name = new_outline.get("title", "modified_document") + ext
 
+    images_map: dict[str, list[str]] = {}
+
     try:
         if doc_type == "ppt":
+            # 从修改后的大纲中提取 slides，搜索下载配图
+            slides = new_outline.get("slides", [])
+            if slides:
+                logger.info(f"[Modify] Fetching images for {len(slides)} slides...")
+                images_map = await fetch_images_for_slides(slides)
+                logger.info(f"[Modify] Images fetched: {len(images_map)} slides have images")
+
             generator = PptGenerator()
             generator.generate(
                 content=new_outline,
                 output_path=file_path,
+                images_map=images_map,
             )
         elif doc_type == "word":
             generator = WordGenerator()
