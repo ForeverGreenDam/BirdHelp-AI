@@ -98,7 +98,7 @@ def get_all_documents(user_id: str, project_id: str) -> list[Document]:
     r = _get_redis()
     index_name = _index_name(user_id, project_id)
     docs: list[Document] = []
-    for key in r.scan_iter(match=f"{index_name}:*", count=100):
+    for key in r.scan_iter(match=f"doc:{index_name}:*", count=100):
         raw = r.hgetall(key)
         if not raw:
             continue

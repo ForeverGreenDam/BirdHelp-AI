@@ -73,7 +73,11 @@ async def retrieve(
     else:
         retriever = ensemble
 
-    docs: list[Document] = await retriever.ainvoke(query)
+    try:
+        docs: list[Document] = await retriever.ainvoke(query)
+    except Exception as exc:
+        logger.warning(f"RAG retrieval failed, degrading to empty context: {exc}")
+        return []
     # 去重（按 page_content 内容）
     seen = set()
     unique: list[Document] = []
